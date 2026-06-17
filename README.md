@@ -67,8 +67,10 @@ inherits production-grade infrastructure for free.
 ```
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design,
-[`docs/EVALS.md`](docs/EVALS.md) for the evaluation methodology, and
-[`docs/EXTENDING.md`](docs/EXTENDING.md) for how new verticals plug in.
+[`docs/EVALS.md`](docs/EVALS.md) for the evaluation methodology,
+[`docs/EXTENDING.md`](docs/EXTENDING.md) for how new verticals plug in,
+and [`docs/PROJECT_STRUCTURE.md`](docs/PROJECT_STRUCTURE.md) for the
+package layout.
 
 ## Tech stack
 

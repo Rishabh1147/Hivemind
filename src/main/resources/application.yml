@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: hivemind
+  profiles:
+    default: local
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics, prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+
+hivemind:
+  platform:
+    default-vertical: triage
+  llm:
+    provider: anthropic
+    model: claude-sonnet-4-6
+  eval:
+    cases-dir: evals
+    thresholds:
+      category-accuracy: 0.85
+      citation-recall: 0.70
+      tone-min-avg: 4.0
+      p95-latency-ms: 8000
+      cost-per-ticket-usd: 0.05
