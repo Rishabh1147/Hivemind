@@ -21,7 +21,9 @@ hivemind:
     default-vertical: triage
   llm:
     provider: anthropic
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5
+    api-key: ${ANTHROPIC_API_KEY:}
+    max-tokens: 1024
   eval:
     cases-dir: evals
     thresholds:
