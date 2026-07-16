@@ -54,12 +54,41 @@ otherwise be hand-rolled. Given the platform's stated goal of hosting *multiple*
 possibly different tool-use patterns, that abstraction is worth the dependency.
 
 **Q: How do you handle the LLM provider failing (auth error, rate limit, timeout)?**
-Currently: `ClassifierAgent` wraps the LLM call in try/catch and returns `AgentResult.failure(...)`
-rather than letting the exception propagate — found and fixed a real bug here (see the 2026-07-15
-devlog) where that wrapping was initially missing and a real `AuthenticationException` surfaced as
-an unhandled 500. Not yet built: distinguishing *retryable* upstream failures (429, 5xx) from
-*non-retryable* ones (malformed model output) — that's designed to live in the `ToolInvoker`
-(timeout/exponential-backoff retry/sandbox) from the roadmap, not bolted onto one agent ad hoc.
+Two layers. `ClassifierAgent` wraps the LLM call in try/catch and returns `AgentResult.failure(...)`
+rather than letting the exception propagate — found and fixed a real bug here early on (see the
+2026-07-15 devlog) where that wrapping was initially missing and a real `AuthenticationException`
+surfaced as an unhandled 500. Below that, `LlmClient.complete()` retries transient failures with
+exponential backoff + full jitter (max 3 attempts by default) before the agent ever sees an
+exception — but only for failures worth retrying. Non-retriable failures (bad API key, malformed
+request) fail immediately with no retry delay.
+
+**Q: How do you decide what's "worth retrying"?**
+Didn't have to invent this — LangChain4j already ships the classification as a proper exception
+hierarchy: `RetriableException` (parent of `RateLimitException`, `InternalServerException`,
+`TimeoutException` — transient, provider-side, safe to retry) vs. `NonRetriableException` (parent
+of `AuthenticationException`, `InvalidRequestException`, `ModelNotFoundException` — retrying won't
+help, the request itself is wrong). The retry loop in `LlmClient` just catches `RetriableException`
+specifically; anything else propagates on the first attempt. Verified this against the *real*
+Anthropic API, not just a mock: hit the live endpoint with a deliberately invalid key and confirmed
+the response came back in well under a second — no wasted retry delay on a failure retrying can't
+fix.
+
+**Q: What's "full jitter" backoff and why use it over plain exponential backoff?**
+Plain exponential backoff (500ms, 1s, 2s, ...) means every client hitting the same failure at the
+same time retries at the same moments — a thundering herd against a provider that's already
+struggling. Full jitter picks a *random* delay between 0 and the exponential ceiling for that
+attempt, so concurrent retries spread out instead of re-synchronizing. `LlmClient` implements this
+as `baseBackoffMs * 2^(attempt-1)`, then a random value in `[0, that]`.
+
+**Q: Why does `LlmClient` have a `protected doChat(...)` method that just wraps one line?**
+Came out of a test-design problem, not a design-first decision. First pass at testing the retry
+loop tried mocking LangChain4j's `ChatModel`/`ChatResponse` with Mockito — `ChatResponse` isn't
+built to be mocked (stubbing it threw `UnfinishedStubbingException`, Mockito's signal that a real
+method ran instead of being intercepted). Rather than fight the SDK's internal response type,
+pulled the one line that actually touches `ChatModel` into its own method, and tested the retry
+*policy* with a small subclass that overrides that method to throw or return scripted values —
+zero LangChain4j types in the test. When a test is awkward to write, that's usually telling you
+something about the code's seams, not about the test.
 
 **Q: Why does the classifier ask for JSON via prompt instructions instead of using tool-calling /
 structured outputs?**
