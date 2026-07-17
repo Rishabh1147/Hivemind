@@ -2,6 +2,10 @@ package com.hivemind.verticals.triage.model;
 
 public record TriageResponse(String id, String status, Category category, Double confidence, String error) {
 
+    public static TriageResponse pending(String id) {
+        return new TriageResponse(id, "pending", null, null, null);
+    }
+
     public static TriageResponse classified(String id, Classification classification) {
         return new TriageResponse(id, "classified", classification.category(), classification.confidence(), null);
     }

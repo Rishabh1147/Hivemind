@@ -25,20 +25,27 @@ a single-process graph library.
 
 **Q: What's actually built vs. what's still just documented/planned?**
 Be precise here — this is a portfolio project and overclaiming is the fastest way to lose
-credibility in an interview. As of the last devlog: a single synchronous agent (`ClassifierAgent`)
-calling Claude via LangChain4j, wired through a REST controller. No Kafka, no Postgres persistence,
-no eval harness, no OpenTelemetry, no frontend yet. Check `docs/devlog/` for the current honest
-state before claiming anything more specific.
+credibility in an interview. As of the last devlog (2026-07-17): one agent (`ClassifierAgent`)
+calling Claude via LangChain4j, now dispatched asynchronously over a real Kafka broker instead of
+called in-process from the controller. Still not built: a planner that coordinates *multiple*
+agents (there's only one), Postgres persistence (an in-memory `TicketStatusStore` stands in for
+now), eval harness, OpenTelemetry, frontend. Check `docs/devlog/` for the current honest state
+before claiming anything more specific.
 
 ## LLM / agent orchestration
 
 **Q: Walk me through what happens when a ticket comes in, today.**
-`POST /api/v1/triage/tickets` → `TriageController` builds an `AgentContext` (a request-scoped
-attribute bag) → hands it to `ClassifierAgent.handle()` → the agent sends the ticket body to Claude
-via `LlmClient` (a thin wrapper around LangChain4j's `ChatModel`) with a system prompt demanding
-strict JSON output → parses the response into a `Category` enum + confidence score with Jackson →
-wraps it in an `AgentResult` (success/payload or failure/error message) → the controller returns it
-as JSON, or a 422 on failure.
+`POST /api/v1/triage/tickets` → `TriageController` generates a ticket ID, writes a `pending`
+`TriageResponse` into `TicketStatusStore`, publishes a `ClassifyRequested` event to
+`hivemind.triage.classify` via `EventBus`, and returns immediately with `202 Accepted` — the
+request thread never waits on Claude. Separately, `ClassifyRequestConsumer` (`@KafkaListener` on
+that topic) picks up the event, builds an `AgentContext`, hands it to `ClassifierAgent.handle()` —
+which sends the ticket body to Claude via `LlmClient` with a system prompt demanding strict JSON,
+parses the response into a `Category` + confidence with Jackson, and returns an `AgentResult`
+(success/payload or failure/error message). The consumer turns that into a `TriageResponse`,
+publishes it to `hivemind.triage.classified` (for future consumers/audit), and writes it into
+`TicketStatusStore`. The client polls `GET /api/v1/triage/tickets/{id}` to see the result —
+`pending` until the consumer catches up, then `classified` or `classification_failed`.
 
 **Q: Why wrap LangChain4j's `ChatModel` in your own `LlmClient` instead of injecting it directly
 into agents?**
@@ -98,7 +105,91 @@ extracted field or the JSON-parse-failure rate in practice justifies it — deli
 that abstraction before there's a concrete need for it.
 
 ## Kafka / eventing
-*(not yet implemented — this section fills in once the event bus lands)*
+
+**Q: Why does the ticket endpoint return `202 Accepted` instead of `200 OK` with the classification
+now?**
+That's the concrete tradeoff of putting Kafka between the controller and the agent: the request
+thread publishes an event and returns, it doesn't block on Claude anymore. `202` with a `pending`
+status is the honest HTTP status for "accepted, not yet done" — returning `200` with a result that
+doesn't exist yet would be wrong. `GET /api/v1/triage/tickets/{id}` is the interim way to observe
+progress until the `Stream` step in `ARCHITECTURE.md` (SSE to a dashboard) exists — swapping that in
+later only changes the read side, not the event-bus wiring.
+
+**Q: Why publish `TicketClassified`-shaped events (`hivemind.triage.classified`) if nothing
+consumes them yet?**
+Because the event log is meant to be the audit trail (`ARCHITECTURE.md`: "the event log *is* the
+audit log"), and because `Retrieve`/`Respond` are the next stages in the pipeline — when
+`RetrieverAgent` exists, it consumes exactly this topic. Publishing it now, one stage ahead of
+having a consumer, keeps the topic contract established alongside the producer instead of guessing
+at it later from the consumer side.
+
+**Q: Where does `EventBus` fit relative to `LlmClient`?**
+Same shape, same reason. `LlmClient` is the one seam every vertical talks to Claude through;
+`EventBus` is the one seam every vertical publishes Kafka events through — both wrap a
+provider/client library (LangChain4j's `ChatModel`, Spring Kafka's `KafkaTemplate`) so
+cross-cutting concerns (OTel spans, an outbox pattern for buffering when Kafka's down — both on the
+roadmap) get added in one place instead of in every agent or consumer.
+
+**Q: How are topics named, and why declare them explicitly instead of letting the broker
+auto-create them?**
+Convention is `hivemind.<vertical>.<stage>` (`platform/messaging/TopicNaming.java`), enforced by a
+test (`TopicNamingTest`) rather than by the type system — `@KafkaListener(topics = ...)` requires a
+compile-time constant, and `TopicNaming.of(...)` is a method call, so it can't be used directly in
+the annotation. Vertical topic names live as literal constants (`TriageTopics`) instead, with the
+test as the guardrail against drift. Topics themselves are declared as `NewTopic` beans in
+`KafkaConfig` (3 partitions, replication factor 1 for local dev) rather than relying on
+`auto.create.topics.enable`, which production clusters typically turn off — explicit beans mean
+partition count and replication factor are in version control, not implicit broker config.
+
+**Q: Why didn't you build a generic `EventConsumer` base class, if `PROJECT_STRUCTURE.md` sketches
+one?**
+Only one concrete consumer exists (`ClassifyRequestConsumer`). Extracting a shared
+deserialize/error-handling shape from a single example is guessing at what varies and what doesn't
+— the same reasoning that's kept `ToolRegistry` unbuilt until there's a second tool. It's a
+one-session addition once a second consumer (e.g. a `RetrieverAgent`) actually needs the same
+shape, not a blocker to today's work.
+
+**Q: How does a Kafka listener fail without silently dropping messages forever?**
+Today: it doesn't have a dead-letter topic yet, so a message that can't be deserialized is logged
+and dropped (fails loudly in logs, not the request), and any exception from the classifier itself
+never reaches the listener because `ClassifierAgent.handle()` already can't throw — every failure
+path returns `AgentResult.failure(...)`, which becomes a `classification_failed` status instead of
+an uncaught exception. That's deliberate reuse of failure handling already built and tested (see
+2026-07-15/16 devlogs) rather than duplicating it at the Kafka layer. A real dead-letter-topic +
+retry policy is future work once there's a second consumer to justify the shared shape (see above).
+
+**Q: You could have wired this with an in-memory queue or just a `@Async` method — why actually
+stand up Kafka?**
+Because the properties that make Kafka worth the operational cost — replay from the event log,
+per-agent horizontal scaling via consumer groups, the event log doubling as an audit trail, strict
+per-vertical topic isolation — don't exist with an in-process queue, and pretending they do would
+misrepresent what's built. The whole point of this session was to make "dispatch via Kafka" an
+honest claim, not an approximately-similar one.
+
+**Q: What proved this actually works, versus just compiling?**
+Three layers, each catching something the previous one couldn't: `TopicNamingTest` (a unit test)
+checks the naming convention purely in-process. `TriageKafkaIntegrationTest` runs a full
+producer → real Kafka broker (Testcontainers) → consumer → status-store round trip, with
+`ClassifierAgent` mocked so the test isolates the event-bus mechanics from classification logic.
+Then, separately, the real app was started against the `docker-compose` broker and hit with `curl`
+— `POST` returned `202`/`pending` immediately, a later `GET` showed `classification_failed` with
+the real Anthropic auth error message (proving the consumer actually invoked Claude, not a stub),
+and `kafka-topics.sh --describe` on the broker confirmed the topics existed with the exact
+partition count `KafkaConfig`'s beans declare. Each layer answers a question the one before it
+can't: "is the logic right," "does it work against a real broker," "does it work as the actual
+deployed app would run."
+
+**Q: Any real bugs or surprises building this?**
+One, and it was in the *tooling*, not the app code: `mvn test` failed only on the new Testcontainers
+test, with the shaded Docker client sending API version `1.32` against a daemon whose minimum
+supported version is `1.40` — confirmed via `curl` on the daemon's `/version` endpoint directly that
+the real API version was `1.55`, so `1.32` wasn't a negotiated value, just a stale default somewhere
+in the client. Opened the actual shaded `RemoteApiVersion` class from the Testcontainers jar to
+check what versions it even knew about (`1.44` was its ceiling) rather than guessing, then bumped
+`testcontainers.version` from `1.20.4` to `1.21.4`, which fixed it outright. The lesson worth
+repeating in an interview: when a test framework — not your code — looks broken, verify that
+specifically before reaching for a workaround; a version bump only looks "obvious" in hindsight
+after confirming where the mismatch actually was.
 
 ## Evals
 *(not yet implemented)*

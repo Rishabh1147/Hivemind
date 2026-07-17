@@ -1,13 +1,14 @@
 package com.hivemind.verticals.triage;
 
-import com.hivemind.platform.agent.AgentContext;
-import com.hivemind.platform.agent.AgentResult;
-import com.hivemind.verticals.triage.agents.ClassifierAgent;
-import com.hivemind.verticals.triage.model.Classification;
+import com.hivemind.platform.messaging.EventBus;
+import com.hivemind.verticals.triage.events.ClassifyRequested;
+import com.hivemind.verticals.triage.messaging.TriageTopics;
 import com.hivemind.verticals.triage.model.Ticket;
 import com.hivemind.verticals.triage.model.TriageResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -19,25 +20,29 @@ import java.util.UUID;
 @RequestMapping("/api/v1/triage")
 public class TriageController {
 
-    private final ClassifierAgent classifierAgent;
+    private final EventBus eventBus;
+    private final TicketStatusStore ticketStatusStore;
 
-    public TriageController(ClassifierAgent classifierAgent) {
-        this.classifierAgent = classifierAgent;
+    public TriageController(EventBus eventBus, TicketStatusStore ticketStatusStore) {
+        this.eventBus = eventBus;
+        this.ticketStatusStore = ticketStatusStore;
     }
 
     @PostMapping("/tickets")
     public ResponseEntity<TriageResponse> ingest(@Valid @RequestBody Ticket ticket) {
         String ticketId = UUID.randomUUID().toString();
 
-        AgentContext context = new AgentContext(ticketId);
-        context.put(ClassifierAgent.TICKET_BODY_KEY, ticket.body());
+        TriageResponse pending = TriageResponse.pending(ticketId);
+        ticketStatusStore.put(pending);
+        eventBus.publish(TriageTopics.CLASSIFY, ticketId, new ClassifyRequested(ticketId, ticket.body()));
 
-        AgentResult<Classification> result = classifierAgent.handle(context);
+        return ResponseEntity.accepted().body(pending);
+    }
 
-        if (!result.success()) {
-            return ResponseEntity.unprocessableEntity()
-                    .body(TriageResponse.failed(ticketId, result.errorMessage()));
-        }
-        return ResponseEntity.ok(TriageResponse.classified(ticketId, result.payload()));
+    @GetMapping("/tickets/{id}")
+    public ResponseEntity<TriageResponse> status(@PathVariable String id) {
+        return ticketStatusStore.get(id)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 }
