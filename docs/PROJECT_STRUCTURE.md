@@ -6,44 +6,48 @@ any `verticals/` package. If you ever need to import from a vertical
 into the platform to make something work, the abstraction is wrong —
 fix the abstraction before adding the next vertical.
 
+This file is the structural map — what lives where, and what's built vs.
+still planned (`✅` = real code today, no mark = planned, described here
+so the eventual file lands in the right place). For the deep "what does
+this actually do, end to end, and why is it built this way," see
+[../OVERVIEW.md](../OVERVIEW.md) — that doc explains behavior and
+rationale; this one just explains layout.
+
 ## Top-level layout
 
 ```
 Hivemind/
-├── pom.xml
-├── README.md
-├── docker-compose.yml                    # local dev: Kafka + Postgres + Redis (added later)
+├── pom.xml                               ✅
+├── README.md                             ✅
+├── OVERVIEW.md                           ✅ living doc — the complete "what/why", updated every session
+├── docker-compose.yml                    ✅ local dev Kafka (KRaft). Postgres + Redis added later
 ├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── EVALS.md
-│   ├── EXTENDING.md
-│   └── PROJECT_STRUCTURE.md              # this file
+│   ├── ARCHITECTURE.md                   ✅
+│   ├── EVALS.md                          ✅ (design only — harness not built yet)
+│   ├── EXTENDING.md                      ✅
+│   ├── PROJECT_STRUCTURE.md              ✅ this file
+│   ├── INTERVIEW_PREP.md                 ✅ cumulative Q&A, topic-organized
+│   └── devlog/                           ✅ one file per session, e.g. 2026-07-20.md
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                        # build + tests + evals
-│       └── deploy.yml                    # K8s deploy (week 3)
-├── evals/
+│       ├── ci.yml                        # build + tests + evals — not added yet
+│       └── deploy.yml                    # K8s deploy — not added yet
+├── evals/                                # eval case JSON files — not added yet
 │   └── triage/
-│       ├── billing-001.json
-│       └── ...
-├── k8s/                                  # week 3
-│   ├── api-gateway.yaml
-│   ├── classifier-agent.yaml
-│   └── keda-scaledobject.yaml
-├── frontend/                             # Next.js 15 dashboard, week 3
-│   └── ...
+├── k8s/                                  # not added yet
+├── frontend/                             # Next.js dashboard — not added yet
 └── src/
     ├── main/
     │   ├── java/com/hivemind/
-    │   │   ├── HivemindApplication.java
-    │   │   ├── platform/                 # vertical-agnostic core
-    │   │   ├── verticals/                # vertical-specific code
-    │   │   └── infra/                    # Spring config, persistence wiring
+    │   │   ├── HivemindApplication.java  ✅
+    │   │   ├── platform/                 ✅ vertical-agnostic core
+    │   │   ├── verticals/                ✅ vertical-specific code
+    │   │   └── infra/                    ✅ Spring config, persistence wiring
     │   └── resources/
-    │       ├── application.yml
-    │       └── db/migration/             # Flyway migrations
+    │       ├── application.yml           ✅
+    │       └── db/migration/             # Flyway migrations — not added yet (no DB yet)
     └── test/
-        └── java/com/hivemind/
+        └── java/com/hivemind/            ✅ 9 test classes, 19 tests
 ```
 
 ## `com.hivemind.platform` — the vertical-agnostic core
@@ -51,64 +55,77 @@ Hivemind/
 ```
 platform/
 ├── agent/
-│   ├── BaseAgent.java                    # abstract base for all agents
-│   ├── AgentRole.java                    # @AgentRole annotation
-│   ├── AgentRegistry.java                # discovers @AgentRole-annotated beans
-│   ├── AgentContext.java                 # request-scoped state
-│   └── AgentResult.java
+│   ├── BaseAgent.java                    ✅ abstract base for all agents
+│   ├── AgentRole.java                    ✅ @AgentRole annotation (meta-annotated @Component)
+│   ├── AgentRegistry.java                # discovers @AgentRole beans by name — not needed yet, only one agent
+│   ├── AgentContext.java                 ✅ request-scoped attribute bag
+│   └── AgentResult.java                  ✅ success/payload/error, generic over agent output
 ├── tool/
-│   ├── Tool.java                         # @Tool annotation
-│   ├── ToolRegistry.java                 # discovers @Tool-annotated beans
-│   ├── ToolInvoker.java                  # timeout, retry, sandbox
-│   └── ToolResult.java
+│   ├── Tool.java                         ✅ @Tool annotation (meta-annotated @Component)
+│   ├── ToolRegistry.java                 ✅ discovers @Tool beans, catalogs by name
+│   ├── ToolInvoker.java                  ✅ virtual-thread sandbox, timeout, retry-on-timeout
+│   └── ToolResult.java                   ✅ success/payload/error, mirrors AgentResult's shape
+├── retry/
+│   └── JitteredExponentialBackoff.java   ✅ shared backoff math (LlmClient + ToolInvoker)
 ├── planner/
-│   └── PlannerAgent.java                 # generic planner; vertical-agnostic
+│   └── PlannerAgent.java                 # generic planner — not built; only one agent exists so far
 ├── memory/
-│   ├── ShortTermMemory.java              # Redis
-│   ├── LongTermMemory.java               # pgvector
-│   └── AuditLog.java                     # Postgres (immutable, append-only)
+│   ├── ShortTermMemory.java              # Redis — not built
+│   ├── LongTermMemory.java               # pgvector — not built
+│   └── AuditLog.java                     # Postgres, immutable append-only — not built (TicketStatusStore is the in-memory stand-in today)
 ├── llm/
-│   ├── LlmClient.java                    # LangChain4j wrapper
-│   └── CostTracker.java                  # tokens → USD per request
+│   ├── LlmClient.java                    ✅ LangChain4j wrapper, retry/backoff, doChat test seam
+│   └── CostTracker.java                  # tokens → USD — not built
 ├── messaging/
-│   ├── EventBus.java                     # Kafka producer
-│   ├── EventConsumer.java                # Kafka consumer base
-│   └── TopicNaming.java                  # hivemind.<vertical>.<stage>
+│   ├── EventBus.java                     ✅ Kafka producer wrapper (JSON via Jackson)
+│   ├── EventConsumer.java                # generic consumer base — deliberately not built; only one concrete consumer exists so far, see OVERVIEW.md
+│   └── TopicNaming.java                  ✅ hivemind.<vertical>.<stage> convention helper
 ├── observability/
-│   ├── OtelConfig.java
-│   └── MetricsRecorder.java
+│   ├── OtelConfig.java                   # not built
+│   └── MetricsRecorder.java              # not built
 └── eval/
-    ├── EvalCase.java
-    ├── EvalRunner.java                   # loads cases, dispatches to vertical
-    ├── EvalScorer.java
-    └── EvalReport.java
+    ├── EvalCase.java                     # not built
+    ├── EvalRunner.java                   # not built
+    ├── EvalScorer.java                   # not built
+    └── EvalReport.java                   # not built
 ```
 
 **Rule**: nothing in `platform/` may reference `com.hivemind.verticals.*`.
 
 ## `com.hivemind.verticals` — vertical-specific code
 
-Each vertical owns a sibling subpackage. The MVP ships only `triage/`.
+Each vertical owns a sibling subpackage. Only `triage/` exists so far.
 
 ```
 verticals/
 └── triage/
-    ├── TriageController.java             # POST /api/v1/triage/tickets
+    ├── TriageController.java             ✅ POST /api/v1/triage/tickets (202), GET /tickets/{id}
+    ├── TicketStatusStore.java            ✅ in-memory read model — stand-in for platform/memory/AuditLog
     ├── agents/
-    │   ├── ClassifierAgent.java          # @AgentRole(vertical="triage", role="classifier")
-    │   ├── RetrieverAgent.java
-    │   └── ResponderAgent.java
+    │   ├── ClassifierAgent.java          ✅ @AgentRole(vertical="triage", role="classifier")
+    │   ├── RetrieverAgent.java           # not built — next candidate, would consume hivemind.triage.classified
+    │   └── ResponderAgent.java           # not built
+    ├── messaging/
+    │   ├── TriageTopics.java             ✅ CLASSIFY / CLASSIFIED topic name constants
+    │   └── ClassifyRequestConsumer.java  ✅ @KafkaListener, runs ClassifierAgent, publishes result
+    ├── events/
+    │   └── ClassifyRequested.java        ✅ {ticketId, body} — the classify-request payload
+    ├── kb/
+    │   ├── KbChunk.java                  ✅ {id, title, text}
+    │   └── KnowledgeBase.java            ✅ 5 hardcoded chunks — stand-in for a Postgres-backed KB
     ├── tools/
-    │   ├── SearchKbTool.java             # @Tool(vertical="triage", name="searchKb")
-    │   ├── SearchPastTicketsTool.java
-    │   ├── FetchUserHistoryTool.java
-    │   ├── EscalateToHumanTool.java
-    │   └── SendResponseTool.java
+    │   ├── SearchKbTool.java             ✅ @Tool(vertical="triage", name="searchKb"), naive keyword scoring
+    │   ├── SearchPastTicketsTool.java    # not built
+    │   ├── FetchUserHistoryTool.java     # not built
+    │   ├── EscalateToHumanTool.java      # not built
+    │   └── SendResponseTool.java         # not built
     └── model/
-        ├── Ticket.java
-        ├── Category.java
-        ├── RoutingDecision.java
-        └── DraftResponse.java
+        ├── Ticket.java                   ✅ inbound DTO {body}
+        ├── Category.java                 ✅ BILLING/BUG/FEATURE_REQUEST/ABUSE/OTHER
+        ├── Classification.java           ✅ {category, confidence}
+        ├── TriageResponse.java           ✅ outbound DTO — also the Kafka "classified" event payload
+        ├── RoutingDecision.java          # not built
+        └── DraftResponse.java            # not built
 ```
 
 When CodeScout (v2) and DeepDigger (v3) ship, they'll be siblings under
@@ -119,55 +136,57 @@ When CodeScout (v2) and DeepDigger (v3) ship, they'll be siblings under
 ```
 infra/
 ├── config/
-│   ├── KafkaConfig.java
-│   ├── PostgresConfig.java
-│   ├── RedisConfig.java
-│   └── ClaudeConfig.java
+│   ├── KafkaConfig.java                  ✅ NewTopic beans for triage's two topics
+│   ├── ClaudeConfig.java                 ✅ LangChain4j AnthropicChatModel bean
+│   ├── PostgresConfig.java               # not built — no DB yet
+│   └── RedisConfig.java                  # not built
 └── persistence/
-    ├── TicketRepository.java
-    ├── AuditEventRepository.java
-    └── KbChunkRepository.java            # pgvector
+    ├── TicketRepository.java             # not built
+    ├── AuditEventRepository.java         # not built
+    └── KbChunkRepository.java            # not built (pgvector)
 ```
 
 `infra/` is "wire it up to Spring/DB/Kafka". `platform/` is the domain
 logic. Mixing the two produces unmaintainable code; keep them separate.
+Note `KafkaConfig` currently imports `TriageTopics` from `verticals.triage`
+— `infra/` is explicitly allowed to know about specific verticals (it's
+wiring, not domain logic), unlike `platform/`.
 
 ## Resources
 
 ```
 resources/
-├── application.yml                       # default profile
-├── application-local.yml                 # local dev overrides (added when needed)
-├── application-test.yml
-└── db/migration/                         # Flyway migrations
-    ├── V1__init.sql
-    ├── V2__audit_log.sql
-    └── V3__pgvector.sql
+├── application.yml                       ✅ spring.kafka.*, hivemind.llm.*, hivemind.tool.*, hivemind.eval.* (eval thresholds configured but unused — no harness yet)
+├── application-local.yml                 # not added yet
+├── application-test.yml                  # not added yet
+└── db/migration/                         # Flyway migrations — not added yet (no DB yet)
 ```
 
 ## Evals — outside `src/`
 
-Eval cases are **data**, not source code. They live in `evals/<vertical>/`
+Eval cases are **data**, not source code. They'll live in `evals/<vertical>/`
 at the repo root so they can be edited by humans, possibly by non-engineers
-later, without classpath bloat or recompilation.
+later, without classpath bloat or recompilation. Not built yet — thresholds
+are configured in `application.yml` (`hivemind.eval.thresholds.*`) but
+nothing reads them.
 
 ## Frontend — separate sibling
 
-The Next.js 15 dashboard (week 3) lives in `frontend/` at the repo root.
+The Next.js dashboard lives in `frontend/` at the repo root, once built.
 It is a sibling of the Spring Boot app, not a Spring resource. It builds
 and deploys independently.
 
-## Day 1 scaffold (current state)
+## Current state (as of 2026-07-20)
 
-Only the minimum-to-compile-and-run files are present today:
+Real code exists in `platform/agent`, `platform/llm`, `platform/messaging`,
+`platform/tool`, `platform/retry`, all of `verticals/triage` except the
+Retriever/Responder agents and four of the five planned tools, and
+`infra/config/{KafkaConfig,ClaudeConfig}`. Local Kafka runs via
+`docker-compose.yml`. Nothing under `k8s/`, `frontend/`, `evals/`,
+`db/migration/`, or `.github/workflows/` exists yet — those are still
+purely descriptions, filled in as their sessions come up.
 
-- `pom.xml`, `application.yml`, `.gitignore`
-- `HivemindApplication.java`
-- `platform/agent/AgentRole.java` (annotation only — no registry yet)
-- `platform/tool/Tool.java` (annotation only — no registry yet)
-- `verticals/triage/TriageController.java` (stub `POST /api/v1/triage/tickets`)
-- `verticals/triage/model/Ticket.java`
-- `HivemindApplicationTests.java` (context-loads test)
-
-The rest of the tree is filled in across weeks 1–3 per the roadmap in
-[../README.md](../README.md).
+For the full narrative — what each of these pieces actually does, the
+request lifecycle as it genuinely runs today, and the reasoning behind
+every structural choice above — see [../OVERVIEW.md](../OVERVIEW.md).
+Day-by-day history of how it got here lives in [devlog/](devlog/).

@@ -25,12 +25,13 @@ a single-process graph library.
 
 **Q: What's actually built vs. what's still just documented/planned?**
 Be precise here — this is a portfolio project and overclaiming is the fastest way to lose
-credibility in an interview. As of the last devlog (2026-07-17): one agent (`ClassifierAgent`)
-calling Claude via LangChain4j, now dispatched asynchronously over a real Kafka broker instead of
-called in-process from the controller. Still not built: a planner that coordinates *multiple*
-agents (there's only one), Postgres persistence (an in-memory `TicketStatusStore` stands in for
-now), eval harness, OpenTelemetry, frontend. Check `docs/devlog/` for the current honest state
-before claiming anything more specific.
+credibility in an interview. As of the last devlog (2026-07-20): one agent (`ClassifierAgent`)
+calling Claude via LangChain4j, dispatched asynchronously over a real Kafka broker, plus a working
+`ToolRegistry`/`ToolInvoker` with one real tool (`searchKb`) — proven with a real Spring context,
+but not yet called by anything in the live request path. Still not built: a planner that
+coordinates *multiple* agents (there's still only one), Postgres persistence (an in-memory
+`TicketStatusStore` stands in for now), eval harness, OpenTelemetry, frontend. Check
+`docs/devlog/` for the current honest state before claiming anything more specific.
 
 ## LLM / agent orchestration
 
@@ -190,6 +191,60 @@ check what versions it even knew about (`1.44` was its ceiling) rather than gues
 repeating in an interview: when a test framework — not your code — looks broken, verify that
 specifically before reaching for a workaround; a version bump only looks "obvious" in hindsight
 after confirming where the mismatch actually was.
+
+## Tool registry
+
+**Q: Why does `ToolInvoker` retry on timeout but not on an exception the tool throws?**
+They're different failure classes. A timeout is infra-level and transient — the same reasoning as
+`LlmClient` retrying `RetriableException` — so backing off and trying again can help. An exception
+the tool itself throws is a logic error (bad input, a bug, a downstream 4xx) that will fail the
+same way every time; retrying it just delays the failure. `LlmClient` gets this distinction for
+free from LangChain4j's exception hierarchy; `ToolInvoker` doesn't have an SDK to lean on, so the
+line is drawn structurally instead: `TimeoutException` from the future retries, everything else
+(`ExecutionException`, i.e. whatever the `Callable` threw) fails immediately.
+
+**Q: What does "sandboxed on a separate virtual-thread executor" actually buy you?**
+Isolation of the caller from a slow or hanging tool call: `Executors.newVirtualThreadPerTaskExecutor()`
+runs each invocation on its own lightweight thread, so `ToolInvoker.invoke(...)` can enforce a hard
+timeout (`future.get(timeoutMs, ...)` + `future.cancel(true)`) without the caller ever blocking past
+that window, and one slow tool doesn't tie up a request-handling thread. `ARCHITECTURE.md` also
+mentions per-tool resource caps beyond the timeout — not built, because no concrete tool has needed
+one yet and a cap picked without a real number behind it is a guess, not a design decision.
+
+**Q: How does `ToolRegistry` find `@Tool`-annotated beans, and why `AnnotationUtils.findAnnotation`
+instead of `bean.getClass().getAnnotation(Tool.class)`?**
+`ApplicationContext.getBeansWithAnnotation(Tool.class)` does the discovery. Reading the annotation
+back off a found bean uses Spring's `AnnotationUtils.findAnnotation` instead of a plain reflective
+`getAnnotation` call because a Spring-proxied bean's runtime class (CGLIB subclass, JDK dynamic
+proxy) can hide class-level annotations from a naive reflective lookup — `findAnnotation` walks
+superclasses/interfaces the way Spring itself resolves annotations, so registration doesn't
+silently break the moment a tool bean picks up a proxy for an unrelated reason (e.g. `@Transactional`
+later).
+
+**Q: `JitteredExponentialBackoff` used to be private methods inside `LlmClient` — why extract it now and not
+back when `LlmClient` was first built?**
+Because there wasn't a second user of the algorithm yet. Extracting a shared abstraction from a
+single example is guessing at what's actually generic; `ToolInvoker` needing the identical
+exponential-backoff-with-jitter math for timeout retries is the concrete second case that makes the
+extraction a genuine simplification instead of speculative design. Same discipline that's kept
+`EventConsumer` and (until today) `ToolRegistry` unbuilt — the codebase waits for a second real
+need before generalizing, it just usually shows up as "don't build it yet" rather than "extract it
+now."
+
+**Q: `searchKb`'s scoring is keyword overlap, not the BM25 + pgvector hybrid search
+`ARCHITECTURE.md` describes — is that a problem?**
+Not for what it's proving today. The tool-registration story (discovery, timeout, retry, sandbox)
+is orthogonal to how good the ranking is — swapping naive overlap for real BM25 or embeddings later
+changes `SearchKbTool.search()`'s internals, not how it's registered or invoked. Building the
+retrieval-quality half before there's a `RetrieverAgent` actually calling it in a pipeline would be
+solving a problem nobody's hit yet.
+
+**Q: Why not wire a `RetrieverAgent` today, since the tool's ready?**
+Scope discipline: agent + Kafka consumer + tool registry all in one session risks getting all three
+half-verified instead of one fully verified. `ToolRegistry`/`ToolInvoker`/`SearchKbTool` are real
+and proven today (a genuine `@SpringBootTest`, not mocks) but nothing in the live request path
+calls them yet — that's next session, and it doubles as the second Kafka consumer needed before
+`EventConsumer` is worth generalizing.
 
 ## Evals
 *(not yet implemented)*

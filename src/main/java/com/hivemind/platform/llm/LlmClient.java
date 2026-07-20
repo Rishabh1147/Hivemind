@@ -1,5 +1,6 @@
 package com.hivemind.platform.llm;
 
+import com.hivemind.platform.retry.JitteredExponentialBackoff;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.exception.RetriableException;
@@ -9,8 +10,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Vertical-agnostic wrapper around the LangChain4j {@link ChatModel}. Every vertical talks to
@@ -50,10 +49,10 @@ public class LlmClient {
                 if (attempt == maxAttempts) {
                     break;
                 }
-                long backoffMs = backoffWithFullJitter(attempt);
+                long backoffMs = JitteredExponentialBackoff.computeDelayMillis(baseBackoffMs, attempt);
                 log.warn("Claude call failed with a retriable error (attempt {}/{}), retrying in {}ms: {}",
                         attempt, maxAttempts, backoffMs, e.getMessage());
-                sleep(backoffMs);
+                JitteredExponentialBackoff.sleep(backoffMs);
             }
         }
         throw lastFailure;
@@ -68,17 +67,4 @@ public class LlmClient {
         return response.aiMessage().text();
     }
 
-    private long backoffWithFullJitter(int attempt) {
-        long exponential = baseBackoffMs * (1L << (attempt - 1));
-        return ThreadLocalRandom.current().nextLong(exponential + 1);
-    }
-
-    private void sleep(long millis) {
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Interrupted while backing off before retry", e);
-        }
-    }
 }

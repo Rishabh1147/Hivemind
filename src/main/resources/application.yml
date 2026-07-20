@@ -37,6 +37,11 @@ hivemind:
     retry:
       max-attempts: 3
       base-backoff-ms: 500
+  tool:
+    timeout-ms: 5000
+    retry:
+      max-attempts: 3
+      base-backoff-ms: 200
   eval:
     cases-dir: evals
     thresholds:
