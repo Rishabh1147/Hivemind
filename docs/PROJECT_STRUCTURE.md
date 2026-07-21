@@ -47,7 +47,7 @@ Hivemind/
     │       ├── application.yml           ✅
     │       └── db/migration/             # Flyway migrations — not added yet (no DB yet)
     └── test/
-        └── java/com/hivemind/            ✅ 9 test classes, 19 tests
+        └── java/com/hivemind/            ✅ 10 test classes, 21 tests
 ```
 
 ## `com.hivemind.platform` — the vertical-agnostic core
@@ -57,7 +57,7 @@ platform/
 ├── agent/
 │   ├── BaseAgent.java                    ✅ abstract base for all agents
 │   ├── AgentRole.java                    ✅ @AgentRole annotation (meta-annotated @Component)
-│   ├── AgentRegistry.java                # discovers @AgentRole beans by name — not needed yet, only one agent
+│   ├── AgentRegistry.java                # discovers @AgentRole beans by name — not needed yet, agents are still wired by direct injection
 │   ├── AgentContext.java                 ✅ request-scoped attribute bag
 │   └── AgentResult.java                  ✅ success/payload/error, generic over agent output
 ├── tool/
@@ -78,7 +78,7 @@ platform/
 │   └── CostTracker.java                  # tokens → USD — not built
 ├── messaging/
 │   ├── EventBus.java                     ✅ Kafka producer wrapper (JSON via Jackson)
-│   ├── EventConsumer.java                # generic consumer base — deliberately not built; only one concrete consumer exists so far, see OVERVIEW.md
+│   ├── EventConsumer.java                # generic consumer base — not built yet, but no longer speculative: two concrete consumers share this shape now, see OVERVIEW.md
 │   └── TopicNaming.java                  ✅ hivemind.<vertical>.<stage> convention helper
 ├── observability/
 │   ├── OtelConfig.java                   # not built
@@ -103,18 +103,22 @@ verticals/
     ├── TicketStatusStore.java            ✅ in-memory read model — stand-in for platform/memory/AuditLog
     ├── agents/
     │   ├── ClassifierAgent.java          ✅ @AgentRole(vertical="triage", role="classifier")
-    │   ├── RetrieverAgent.java           # not built — next candidate, would consume hivemind.triage.classified
-    │   └── ResponderAgent.java           # not built
+    │   ├── RetrieverAgent.java           ✅ @AgentRole(vertical="triage", role="retriever"), calls searchKb via ToolRegistry+ToolInvoker
+    │   ├── TriageContextKeys.java        ✅ shared AgentContext keys (ticketBody) — used by both agents above
+    │   └── ResponderAgent.java           # not built — next candidate, would consume hivemind.triage.retrieved
     ├── messaging/
-    │   ├── TriageTopics.java             ✅ CLASSIFY / CLASSIFIED topic name constants
-    │   └── ClassifyRequestConsumer.java  ✅ @KafkaListener, runs ClassifierAgent, publishes result
+    │   ├── TriageTopics.java             ✅ CLASSIFY / CLASSIFIED / RETRIEVED topic name constants
+    │   ├── ClassifyRequestConsumer.java  ✅ @KafkaListener, runs ClassifierAgent, publishes TicketClassified
+    │   └── TicketClassifiedConsumer.java ✅ @KafkaListener, runs RetrieverAgent, publishes TicketRetrieved
     ├── events/
-    │   └── ClassifyRequested.java        ✅ {ticketId, body} — the classify-request payload
+    │   ├── ClassifyRequested.java        ✅ {ticketId, body} — the classify-request payload
+    │   ├── TicketClassified.java         ✅ {ticketId, ticketBody, status, category, confidence, error} — classify result, carries body for the retrieve stage
+    │   └── TicketRetrieved.java          ✅ {ticketId, status, chunks, error} — retrieve result
     ├── kb/
     │   ├── KbChunk.java                  ✅ {id, title, text}
     │   └── KnowledgeBase.java            ✅ 5 hardcoded chunks — stand-in for a Postgres-backed KB
     ├── tools/
-    │   ├── SearchKbTool.java             ✅ @Tool(vertical="triage", name="searchKb"), naive keyword scoring
+    │   ├── SearchKbTool.java             ✅ @Tool(vertical="triage", name="searchKb"), naive keyword scoring, called by RetrieverAgent
     │   ├── SearchPastTicketsTool.java    # not built
     │   ├── FetchUserHistoryTool.java     # not built
     │   ├── EscalateToHumanTool.java      # not built
@@ -123,7 +127,7 @@ verticals/
         ├── Ticket.java                   ✅ inbound DTO {body}
         ├── Category.java                 ✅ BILLING/BUG/FEATURE_REQUEST/ABUSE/OTHER
         ├── Classification.java           ✅ {category, confidence}
-        ├── TriageResponse.java           ✅ outbound DTO — also the Kafka "classified" event payload
+        ├── TriageResponse.java           ✅ outbound DTO only now — Kafka payloads split out to events/ (2026-07-21)
         ├── RoutingDecision.java          # not built
         └── DraftResponse.java            # not built
 ```
@@ -136,7 +140,7 @@ When CodeScout (v2) and DeepDigger (v3) ship, they'll be siblings under
 ```
 infra/
 ├── config/
-│   ├── KafkaConfig.java                  ✅ NewTopic beans for triage's two topics
+│   ├── KafkaConfig.java                  ✅ NewTopic beans for triage's three topics
 │   ├── ClaudeConfig.java                 ✅ LangChain4j AnthropicChatModel bean
 │   ├── PostgresConfig.java               # not built — no DB yet
 │   └── RedisConfig.java                  # not built
@@ -176,15 +180,16 @@ The Next.js dashboard lives in `frontend/` at the repo root, once built.
 It is a sibling of the Spring Boot app, not a Spring resource. It builds
 and deploys independently.
 
-## Current state (as of 2026-07-20)
+## Current state (as of 2026-07-21)
 
 Real code exists in `platform/agent`, `platform/llm`, `platform/messaging`,
 `platform/tool`, `platform/retry`, all of `verticals/triage` except the
-Retriever/Responder agents and four of the five planned tools, and
+Responder agent and four of the five planned tools, and
 `infra/config/{KafkaConfig,ClaudeConfig}`. Local Kafka runs via
-`docker-compose.yml`. Nothing under `k8s/`, `frontend/`, `evals/`,
-`db/migration/`, or `.github/workflows/` exists yet — those are still
-purely descriptions, filled in as their sessions come up.
+`docker-compose.yml`, now carrying two chained consumers
+(classify → retrieve) instead of one. Nothing under `k8s/`, `frontend/`,
+`evals/`, `db/migration/`, or `.github/workflows/` exists yet — those are
+still purely descriptions, filled in as their sessions come up.
 
 For the full narrative — what each of these pieces actually does, the
 request lifecycle as it genuinely runs today, and the reasoning behind

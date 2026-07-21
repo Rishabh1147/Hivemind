@@ -25,11 +25,12 @@ a single-process graph library.
 
 **Q: What's actually built vs. what's still just documented/planned?**
 Be precise here — this is a portfolio project and overclaiming is the fastest way to lose
-credibility in an interview. As of the last devlog (2026-07-20): one agent (`ClassifierAgent`)
-calling Claude via LangChain4j, dispatched asynchronously over a real Kafka broker, plus a working
-`ToolRegistry`/`ToolInvoker` with one real tool (`searchKb`) — proven with a real Spring context,
-but not yet called by anything in the live request path. Still not built: a planner that
-coordinates *multiple* agents (there's still only one), Postgres persistence (an in-memory
+credibility in an interview. As of the last devlog (2026-07-21): two agents (`ClassifierAgent`,
+`RetrieverAgent`) genuinely chained through Kafka — classify feeds retrieve — with
+`ToolRegistry`/`ToolInvoker` and the `searchKb` tool now actually called in the live pipeline, not
+just proven standalone. Still not built: a planner that *decides* which agents to invoke (the
+classify→retrieve link is hardcoded in a consumer, not planner-routed), a Responder (retrieved
+chunks aren't surfaced anywhere user-visible yet), Postgres persistence (an in-memory
 `TicketStatusStore` stands in for now), eval harness, OpenTelemetry, frontend. Check
 `docs/devlog/` for the current honest state before claiming anything more specific.
 
@@ -44,9 +45,18 @@ that topic) picks up the event, builds an `AgentContext`, hands it to `Classifie
 which sends the ticket body to Claude via `LlmClient` with a system prompt demanding strict JSON,
 parses the response into a `Category` + confidence with Jackson, and returns an `AgentResult`
 (success/payload or failure/error message). The consumer turns that into a `TriageResponse`,
-publishes it to `hivemind.triage.classified` (for future consumers/audit), and writes it into
-`TicketStatusStore`. The client polls `GET /api/v1/triage/tickets/{id}` to see the result —
-`pending` until the consumer catches up, then `classified` or `classification_failed`.
+publishes a `TicketClassified` event (which carries the ticket body — `TriageResponse` doesn't) to
+`hivemind.triage.classified`, and writes a `TriageResponse` into `TicketStatusStore`. The client
+polls `GET /api/v1/triage/tickets/{id}` to see the result — `pending` until the consumer catches up,
+then `classified` or `classification_failed`.
+
+Separately again, `TicketClassifiedConsumer` picks up that same `TicketClassified` event. If
+classification failed it stops there — nothing to search for. Otherwise it hands the ticket body to
+`RetrieverAgent`, which looks up `searchKb` from `ToolRegistry` and calls it through `ToolInvoker`;
+the resulting chunks get published as a `TicketRetrieved` event to `hivemind.triage.retrieved`. This
+stage doesn't touch `TicketStatusStore` — there's no Responder yet to turn retrieved chunks into
+something the API should show, so `GET /tickets/{id}` still reports `classified`, and the retrieved
+result is, for now, only observable on the topic itself.
 
 **Q: Why wrap LangChain4j's `ChatModel` in your own `LlmClient` instead of injecting it directly
 into agents?**
@@ -118,11 +128,25 @@ later only changes the read side, not the event-bus wiring.
 
 **Q: Why publish `TicketClassified`-shaped events (`hivemind.triage.classified`) if nothing
 consumes them yet?**
-Because the event log is meant to be the audit trail (`ARCHITECTURE.md`: "the event log *is* the
-audit log"), and because `Retrieve`/`Respond` are the next stages in the pipeline — when
-`RetrieverAgent` exists, it consumes exactly this topic. Publishing it now, one stage ahead of
-having a consumer, keeps the topic contract established alongside the producer instead of guessing
-at it later from the consumer side.
+This was true through 2026-07-20 and is the reasoning that held while it was: the event log is
+meant to be the audit trail (`ARCHITECTURE.md`: "the event log *is* the audit log"), and publishing
+a topic's contract one stage ahead of having a consumer means it's designed alongside the producer
+instead of guessed at later from the consumer side. As of 2026-07-21 it's no longer hypothetical —
+`TicketClassifiedConsumer` consumes exactly this topic, and `hivemind.triage.retrieved` is now the
+one published a stage ahead of its own first consumer.
+
+**Q: `TicketClassified` and `TriageResponse` used to be the same type reused for two purposes — why
+split them?**
+Because they stopped actually being the same information. While only the HTTP response needed
+`{id, status, category, confidence, error}`, reusing `TriageResponse` as the Kafka payload too was
+harmless — no duplication, just one type serving two roles that happened to need the same fields.
+That coincidence broke the moment `RetrieverAgent` needed the original ticket body to search
+against: an HTTP client has no reason to get its own submitted ticket body echoed back in the
+response, but a downstream Kafka consumer has every reason to need it, since it's not the one that
+originally received the ticket. The fix is a dedicated `TicketClassified` event type carrying
+`ticketBody`, not adding an unused field to the API response. General lesson: two things that
+happen to have the same shape aren't the same concept, and the right time to notice is when a real
+second consumer's actual needs diverge — not by trying to anticipate it upfront.
 
 **Q: Where does `EventBus` fit relative to `LlmClient`?**
 Same shape, same reason. `LlmClient` is the one seam every vertical talks to Claude through;
@@ -144,11 +168,15 @@ partition count and replication factor are in version control, not implicit brok
 
 **Q: Why didn't you build a generic `EventConsumer` base class, if `PROJECT_STRUCTURE.md` sketches
 one?**
-Only one concrete consumer exists (`ClassifyRequestConsumer`). Extracting a shared
-deserialize/error-handling shape from a single example is guessing at what varies and what doesn't
-— the same reasoning that's kept `ToolRegistry` unbuilt until there's a second tool. It's a
-one-session addition once a second consumer (e.g. a `RetrieverAgent`) actually needs the same
-shape, not a blocker to today's work.
+Through 2026-07-20, only one concrete consumer existed (`ClassifyRequestConsumer`), and extracting a
+shared deserialize/error-handling shape from a single example would have been guessing at what
+varies and what doesn't — the same reasoning that kept `ToolRegistry` unbuilt until there was a
+second tool. As of 2026-07-21 there are two consumers (`ClassifyRequestConsumer`,
+`TicketClassifiedConsumer`) with an identical shape — try/catch around
+`objectMapper.readValue`, log-and-return on failure, build an `AgentContext`, call an agent, publish
+the result. The extraction is no longer speculative; it just hasn't been done yet because this
+session's focus was making the second consumer exist for real, not generalizing immediately as a
+side effect. It's the next flagged candidate for exactly this reason.
 
 **Q: How does a Kafka listener fail without silently dropping messages forever?**
 Today: it doesn't have a dead-letter topic yet, so a message that can't be deserialized is logged
@@ -191,6 +219,28 @@ check what versions it even knew about (`1.44` was its ceiling) rather than gues
 repeating in an interview: when a test framework — not your code — looks broken, verify that
 specifically before reaching for a workaround; a version bump only looks "obvious" in hindsight
 after confirming where the mismatch actually was.
+
+A second one on 2026-07-21: `KafkaTestUtils.consumerProps(...)` takes `(brokerAddresses, group,
+autoCommit)`; called it with the arguments in the order they'd read naturally
+(`group, autoCommit, brokerAddresses`), which compiled fine (all three are `String`) and failed at
+runtime with `ConfigException: Invalid value PLAINTEXT://... for enable.auto.commit`. Fixed by
+checking the actual method signature instead of re-guessing the order. Small, but a reminder that
+same-typed positional parameters are a real footgun even in library code you didn't write.
+
+**Q: How does `TicketClassifiedConsumer` decide whether to run retrieval, and how was that verified
+without a real Anthropic API key?**
+It checks the incoming `TicketClassified` event's `status` field — `"classified"` proceeds to
+retrieval, anything else (`"classification_failed"`) logs and returns without publishing anything to
+`hivemind.triage.retrieved`. There's no point searching a knowledge base for a ticket whose category
+is unknown. Verified against the real `docker-compose` broker without needing a working Anthropic
+key by publishing hand-built `TicketClassified` JSON messages directly onto
+`hivemind.triage.classified` with `kafka-console-producer.sh` — one with `status: "classified"`,
+which produced a real, correctly-ranked result on the retrieved topic
+(`kafka-console-consumer.sh`), and one with `status: "classification_failed"`, which produced
+nothing, with the skip reason visible in the app log. This isolates exactly the new code
+(`TicketClassifiedConsumer` → `RetrieverAgent` → `ToolRegistry`/`ToolInvoker` → `SearchKbTool`) from
+the classify stage, the same way `@MockBean`-ing `ClassifierAgent` isolates it in the automated
+integration test.
 
 ## Tool registry
 
@@ -239,12 +289,25 @@ changes `SearchKbTool.search()`'s internals, not how it's registered or invoked.
 retrieval-quality half before there's a `RetrieverAgent` actually calling it in a pipeline would be
 solving a problem nobody's hit yet.
 
-**Q: Why not wire a `RetrieverAgent` today, since the tool's ready?**
-Scope discipline: agent + Kafka consumer + tool registry all in one session risks getting all three
-half-verified instead of one fully verified. `ToolRegistry`/`ToolInvoker`/`SearchKbTool` are real
-and proven today (a genuine `@SpringBootTest`, not mocks) but nothing in the live request path
-calls them yet — that's next session, and it doubles as the second Kafka consumer needed before
-`EventConsumer` is worth generalizing.
+**Q: `RetrieverAgent` looks up `searchKb` from `ToolRegistry` and casts the result to `SearchKbTool`
+— isn't that a type-safety gap?**
+Yes, and it's called out explicitly rather than left implicit — `ToolRegistry.get(name)` returns
+`Object`, so the agent is trusting that a bean registered under the name `"searchKb"` really is a
+`SearchKbTool` by convention, not by the compiler. Closing that gap properly means every tool
+implementing a common, generically-invokable contract (arguments in, result out, independent of the
+concrete tool class) — worth designing once there's a second tool with a different method signature
+to design the contract against, not on spec for the one tool that exists today. Same "wait for the
+second concrete case" reasoning as everywhere else in this codebase, applied to acknowledge a real
+gap instead of pretending it isn't there.
+
+**Q: Why does `RetrieverAgent` look up the tool from `ToolRegistry` instead of just injecting
+`SearchKbTool` directly, since it's the only tool that exists?**
+Because the point of a registry is dynamic dispatch by name, and direct injection would defeat that
+purpose even though it would compile and work today. This is deliberately the path a future
+planner-dispatched agent would use — an agent that gets told "call the tool named X" and looks it
+up, rather than one that's compiled against a specific tool class. Direct injection is simpler code
+for a system with one tool and one caller; registry lookup is the right shape for the system this is
+built to become.
 
 ## Evals
 *(not yet implemented)*

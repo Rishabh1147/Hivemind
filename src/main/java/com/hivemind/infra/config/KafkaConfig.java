@@ -23,4 +23,9 @@ public class KafkaConfig {
     public NewTopic triageClassifiedTopic() {
         return TopicBuilder.name(TriageTopics.CLASSIFIED).partitions(3).replicas(1).build();
     }
+
+    @Bean
+    public NewTopic triageRetrievedTopic() {
+        return TopicBuilder.name(TriageTopics.RETRIEVED).partitions(3).replicas(1).build();
+    }
 }

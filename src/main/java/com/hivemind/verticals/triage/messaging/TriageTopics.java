@@ -10,6 +10,7 @@ public final class TriageTopics {
 
     public static final String CLASSIFY = "hivemind.triage.classify";
     public static final String CLASSIFIED = "hivemind.triage.classified";
+    public static final String RETRIEVED = "hivemind.triage.retrieved";
 
     private TriageTopics() {
     }

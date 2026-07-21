@@ -24,7 +24,7 @@ class ClassifierAgentTest {
         ClassifierAgent agent = new ClassifierAgent(llmClient, objectMapper);
 
         AgentContext context = new AgentContext("ticket-1");
-        context.put(ClassifierAgent.TICKET_BODY_KEY, "I was charged twice for my subscription");
+        context.put(TriageContextKeys.TICKET_BODY, "I was charged twice for my subscription");
 
         AgentResult<Classification> result = agent.handle(context);
 
@@ -40,7 +40,7 @@ class ClassifierAgentTest {
         ClassifierAgent agent = new ClassifierAgent(llmClient, objectMapper);
 
         AgentContext context = new AgentContext("ticket-3");
-        context.put(ClassifierAgent.TICKET_BODY_KEY, "some ticket body");
+        context.put(TriageContextKeys.TICKET_BODY, "some ticket body");
 
         AgentResult<Classification> result = agent.handle(context);
 
@@ -55,7 +55,7 @@ class ClassifierAgentTest {
         ClassifierAgent agent = new ClassifierAgent(llmClient, objectMapper);
 
         AgentContext context = new AgentContext("ticket-2");
-        context.put(ClassifierAgent.TICKET_BODY_KEY, "some ticket body");
+        context.put(TriageContextKeys.TICKET_BODY, "some ticket body");
 
         AgentResult<Classification> result = agent.handle(context);
 

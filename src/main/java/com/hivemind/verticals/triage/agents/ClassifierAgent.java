@@ -13,8 +13,6 @@ import com.hivemind.verticals.triage.model.Classification;
 @AgentRole(vertical = "triage", role = "classifier")
 public class ClassifierAgent extends BaseAgent<Classification> {
 
-    public static final String TICKET_BODY_KEY = "ticketBody";
-
     private static final String SYSTEM_PROMPT = """
             You are a support ticket classifier for a SaaS product. Classify the ticket into \
             exactly one of: BILLING, BUG, FEATURE_REQUEST, ABUSE, OTHER.
@@ -31,7 +29,7 @@ public class ClassifierAgent extends BaseAgent<Classification> {
 
     @Override
     public AgentResult<Classification> handle(AgentContext context) {
-        String ticketBody = (String) context.get(TICKET_BODY_KEY);
+        String ticketBody = (String) context.get(TriageContextKeys.TICKET_BODY);
         String raw;
         try {
             raw = llmClient.complete(SYSTEM_PROMPT, ticketBody);
