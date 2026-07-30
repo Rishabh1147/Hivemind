@@ -1,0 +1,7 @@
+{
+  "id": "billing-004",
+  "ticket": "Several of my subscription payments have failed recently, and my account now shows past due — please retry them before it gets worse.",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-failed-payment"]
+}

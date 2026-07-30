@@ -11,6 +11,8 @@ import com.hivemind.platform.agent.AgentContext;
 public final class TriageContextKeys {
 
     public static final String TICKET_BODY = "ticketBody";
+    public static final String RETRIEVED_CHUNKS = "retrievedChunks";
+    public static final String CURRENT_TRIAGE_RESPONSE = "currentTriageResponse";
 
     private TriageContextKeys() {
     }

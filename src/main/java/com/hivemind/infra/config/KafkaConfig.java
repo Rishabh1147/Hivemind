@@ -28,4 +28,14 @@ public class KafkaConfig {
     public NewTopic triageRetrievedTopic() {
         return TopicBuilder.name(TriageTopics.RETRIEVED).partitions(3).replicas(1).build();
     }
+
+    @Bean
+    public NewTopic triageRespondedTopic() {
+        return TopicBuilder.name(TriageTopics.RESPONDED).partitions(3).replicas(1).build();
+    }
+
+    @Bean
+    public NewTopic triageRoutedTopic() {
+        return TopicBuilder.name(TriageTopics.ROUTED).partitions(3).replicas(1).build();
+    }
 }

@@ -1,0 +1,7 @@
+{
+  "id": "other-001",
+  "ticket": "What are your standard business hours and is there a phone number I can call for support?",
+  "expectedCategory": "OTHER",
+  "expectedRouting": null,
+  "mustCite": []
+}

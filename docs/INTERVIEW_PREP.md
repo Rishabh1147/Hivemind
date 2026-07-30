@@ -25,14 +25,18 @@ a single-process graph library.
 
 **Q: What's actually built vs. what's still just documented/planned?**
 Be precise here — this is a portfolio project and overclaiming is the fastest way to lose
-credibility in an interview. As of the last devlog (2026-07-21): two agents (`ClassifierAgent`,
-`RetrieverAgent`) genuinely chained through Kafka — classify feeds retrieve — with
-`ToolRegistry`/`ToolInvoker` and the `searchKb` tool now actually called in the live pipeline, not
-just proven standalone. Still not built: a planner that *decides* which agents to invoke (the
-classify→retrieve link is hardcoded in a consumer, not planner-routed), a Responder (retrieved
-chunks aren't surfaced anywhere user-visible yet), Postgres persistence (an in-memory
-`TicketStatusStore` stands in for now), eval harness, OpenTelemetry, frontend. Check
-`docs/devlog/` for the current honest state before claiming anything more specific.
+credibility in an interview. As of the last devlog (2026-07-30, session 10): four agents
+(`ClassifierAgent`, `RetrieverAgent`, `ResponderAgent`, `RoutingAgent`) genuinely chained through
+Kafka — classify → retrieve → respond → route — with `GET /tickets/{id}` reaching a final routing
+decision, both ticket state and the full event history persisted in real Postgres (`TicketRepository`,
+`AuditLog`), and an eval harness (`verticals/triage/eval/`) that runs 10 hand-written cases and
+gates on category accuracy / citation recall / p95 latency with a real process exit code. The full
+`ARCHITECTURE.md` pipeline is real except the `Stream` step (SSE to a dashboard that doesn't exist).
+Still not built: a planner that *decides* the chain dynamically (it's four hardcoded consumer→topic
+links, not planner-routed), pgvector-backed KB persistence (`KnowledgeBase` is still 5 hardcoded
+chunks), the eval harness's tone scoring and cost gating, any CI workflow actually invoking the
+harness, OpenTelemetry, frontend. Check `docs/devlog/` for the current honest state before claiming
+anything more specific.
 
 ## LLM / agent orchestration
 
@@ -53,10 +57,26 @@ then `classified` or `classification_failed`.
 Separately again, `TicketClassifiedConsumer` picks up that same `TicketClassified` event. If
 classification failed it stops there — nothing to search for. Otherwise it hands the ticket body to
 `RetrieverAgent`, which looks up `searchKb` from `ToolRegistry` and calls it through `ToolInvoker`;
-the resulting chunks get published as a `TicketRetrieved` event to `hivemind.triage.retrieved`. This
-stage doesn't touch `TicketStatusStore` — there's no Responder yet to turn retrieved chunks into
-something the API should show, so `GET /tickets/{id}` still reports `classified`, and the retrieved
-result is, for now, only observable on the topic itself.
+the resulting chunks get published as a `TicketRetrieved` event (carrying the ticket body forward
+again) to `hivemind.triage.retrieved`. This stage still doesn't touch `TicketStatusStore` —
+retrieval alone isn't a result worth surfacing.
+
+One more time, `TicketRetrievedConsumer` picks up that event. If retrieval failed it stops. Otherwise
+it hands the ticket body and chunks to `ResponderAgent`, which drafts an answer via Claude (same
+strict-JSON-prompt approach as the classifier). This consumer *does* write into `TicketStatusStore`
+— it reads the ticket's current `TriageResponse` (still carrying `category`/`confidence` from the
+classify stage) and calls `.withResponse(draft)` on it, an instance method that preserves those
+fields while updating `status`/`answer`/`citedChunkIds`, rather than building a fresh record that
+would lose them. It also publishes a `TicketResponded` event to `hivemind.triage.responded`.
+
+Finally, `TicketRespondedConsumer` picks that up and hands the ticket's *whole current*
+`TriageResponse` to `RoutingAgent` — unlike every earlier consumer, it does not skip on failure:
+even a `response_failed` ticket gets routed (to `ESCALATE`), since that's exactly the ticket that
+most needs a human to see it. `RoutingAgent` is the one agent that never calls Claude — auto-resolve
+vs. queue vs. escalate is a deterministic function of category, confidence, and status. The consumer
+writes the decision into `TicketStatusStore` and publishes a final `TicketRouted` event.
+`GET /tickets/{id}` now reaches the pipeline's true terminal state: `routed`, with a `routingDecision`
+alongside everything the earlier stages produced.
 
 **Q: Why wrap LangChain4j's `ChatModel` in your own `LlmClient` instead of injecting it directly
 into agents?**
@@ -115,6 +135,42 @@ LangChain4j's structured-output support are the natural upgrade once there's mor
 extracted field or the JSON-parse-failure rate in practice justifies it — deliberately not adding
 that abstraction before there's a concrete need for it.
 
+**Q: `ResponderAgent` uses the same strict-JSON-via-prompt approach as `ClassifierAgent` — is that
+just copying the pattern, or is there a reason it still fits?**
+Both: reuse where the shape genuinely repeats, and this one still has a good reason. `ResponderAgent`
+extracts two fields (`answer`, `citedChunkIds`) — still simple enough that a tool-calling schema
+would be more ceremony than value, the same threshold `ClassifierAgent`'s Q&A above draws. It also
+deliberately handles zero retrieved chunks as a normal case, not a failure: the prompt tells Claude
+to say the KB doesn't cover the ticket rather than invent policy, so a ticket with no KB match still
+gets a legitimate answer instead of the agent short-circuiting before ever calling the LLM.
+
+**Q: `TriageResponse` used to be built fresh by each factory method (`pending`, `classified`,
+`failed`) — why does the respond stage use instance methods (`withResponse`,
+`withResponseFailure`) instead?**
+Because by the time a ticket reaches the respond stage, its `TriageResponse` needs to carry results
+from *two* prior stages at once — `category`/`confidence` from classify, plus the new
+`answer`/`citedChunkIds` from respond. Building a fresh record from scratch (the way `classified(...)`
+does) would mean either re-passing the classification result into the respond consumer, or losing it.
+Neither's right: `TicketRetrievedConsumer` reads the ticket's *current* stored `TriageResponse` and
+calls `.withResponse(draft)` on it — an instance method with access to `this`, so it can carry
+forward whatever's already there while only changing what this stage actually produced. Records
+being immutable doesn't mean every update has to rebuild from nothing; it means each update is an
+explicit, named transformation, which is more honest about what's actually changing than a
+seven-argument constructor call would be.
+
+**Q: Any real bugs or surprises building the respond stage?**
+A genuine race condition in the *test*, not the app: `TriageKafkaIntegrationTest` originally polled
+the HTTP status for the intermediate `"classified"` value, the same way it already polled for
+`"pending"` → anything-else. With three consumers all reacting near-instantly (mocked LLM calls,
+in-memory KB, no real network latency), the ticket could reach `"responded"` between two 250ms polls
+— skipping straight past `"classified"`, so the test occasionally failed asserting a state that had
+already come and gone. Fixed by reading the intermediate `TicketRetrieved` event directly off Kafka
+(read once, not polled, so there's nothing to race) and only polling HTTP for the terminal
+`"responded"` status, asserting `category`/`confidence` from that same final read rather than an
+intermediate one it might miss. The lesson: polling for an exact intermediate state in a fast,
+multi-stage async pipeline is inherently racy — poll for "no longer earlier than X" or for the
+terminal state, not for a state that might not still be current by the time you observe it.
+
 ## Kafka / eventing
 
 **Q: Why does the ticket endpoint return `202 Accepted` instead of `200 OK` with the classification
@@ -126,14 +182,14 @@ doesn't exist yet would be wrong. `GET /api/v1/triage/tickets/{id}` is the inter
 progress until the `Stream` step in `ARCHITECTURE.md` (SSE to a dashboard) exists — swapping that in
 later only changes the read side, not the event-bus wiring.
 
-**Q: Why publish `TicketClassified`-shaped events (`hivemind.triage.classified`) if nothing
-consumes them yet?**
-This was true through 2026-07-20 and is the reasoning that held while it was: the event log is
-meant to be the audit trail (`ARCHITECTURE.md`: "the event log *is* the audit log"), and publishing
-a topic's contract one stage ahead of having a consumer means it's designed alongside the producer
-instead of guessed at later from the consumer side. As of 2026-07-21 it's no longer hypothetical —
-`TicketClassifiedConsumer` consumes exactly this topic, and `hivemind.triage.retrieved` is now the
-one published a stage ahead of its own first consumer.
+**Q: Why publish events a stage ahead of having a consumer for them — isn't
+`hivemind.triage.responded` doing that right now with no consumer at all?**
+Yes, and it's the fourth time this pattern has repeated (`classified` and `retrieved` were both
+published before anything consumed them; both are consumed now). The event log is meant to be the
+audit trail (`ARCHITECTURE.md`: "the event log *is* the audit log"), and publishing a topic's
+contract alongside its producer — rather than designing it later from whatever the eventual consumer
+turns out to need — is the consistent choice across every stage in this vertical. The natural future
+consumer for `hivemind.triage.responded` is a Router/planner stage that isn't built yet.
 
 **Q: `TicketClassified` and `TriageResponse` used to be the same type reused for two purposes — why
 split them?**
@@ -166,26 +222,34 @@ test as the guardrail against drift. Topics themselves are declared as `NewTopic
 `auto.create.topics.enable`, which production clusters typically turn off — explicit beans mean
 partition count and replication factor are in version control, not implicit broker config.
 
-**Q: Why didn't you build a generic `EventConsumer` base class, if `PROJECT_STRUCTURE.md` sketches
-one?**
-Through 2026-07-20, only one concrete consumer existed (`ClassifyRequestConsumer`), and extracting a
-shared deserialize/error-handling shape from a single example would have been guessing at what
-varies and what doesn't — the same reasoning that kept `ToolRegistry` unbuilt until there was a
-second tool. As of 2026-07-21 there are two consumers (`ClassifyRequestConsumer`,
-`TicketClassifiedConsumer`) with an identical shape — try/catch around
-`objectMapper.readValue`, log-and-return on failure, build an `AgentContext`, call an agent, publish
-the result. The extraction is no longer speculative; it just hasn't been done yet because this
-session's focus was making the second consumer exist for real, not generalizing immediately as a
-side effect. It's the next flagged candidate for exactly this reason.
+**Q: Walk me through the `EventConsumer<T>` base class — why did it take until the third consumer to
+build it, and what does it actually do?**
+Through 2026-07-17 there was one consumer, and extracting a shared shape from a single example would
+have been guessing at what varies — the same reasoning that kept `ToolRegistry` unbuilt until there
+was a second tool. By 2026-07-21 there were two with an identical shape, which made the extraction
+no longer speculative, but it still wasn't done — that session's focus was making the second
+consumer exist for real, not generalizing as a side effect of adding it. On 2026-07-30, with a third
+consumer about to be written, the extraction finally happened: `EventConsumer<T>` takes an
+`ObjectMapper` and the event `Class<T>` in its constructor, exposes a `protected final void
+consume(String rawJson)` that deserializes (logging and dropping anything unparseable) and calls the
+subclass's abstract `onEvent(T)` — itself wrapped in a try/catch that logs rather than lets an
+unhandled exception reach the Kafka listener container thread. `ClassifyRequestConsumer` and
+`TicketClassifiedConsumer` were refactored onto it first, with the full test suite re-run green
+before adding anything new on top — verify the refactor is safe in isolation before building a
+feature on it. `TicketRetrievedConsumer` was then written directly against the base rather than
+copy-pasted and cleaned up afterward.
 
 **Q: How does a Kafka listener fail without silently dropping messages forever?**
-Today: it doesn't have a dead-letter topic yet, so a message that can't be deserialized is logged
-and dropped (fails loudly in logs, not the request), and any exception from the classifier itself
-never reaches the listener because `ClassifierAgent.handle()` already can't throw — every failure
-path returns `AgentResult.failure(...)`, which becomes a `classification_failed` status instead of
-an uncaught exception. That's deliberate reuse of failure handling already built and tested (see
-2026-07-15/16 devlogs) rather than duplicating it at the Kafka layer. A real dead-letter-topic +
-retry policy is future work once there's a second consumer to justify the shared shape (see above).
+Two layers, both now centralized in `EventConsumer<T>` rather than duplicated per consumer: a
+message that can't be deserialized is logged and dropped (fails loudly in logs, not the request),
+and any exception `onEvent` throws is caught and logged rather than reaching the listener container
+thread. In practice the second layer rarely fires for the triage agents specifically, since
+`ClassifierAgent`/`RetrieverAgent`/`ResponderAgent.handle()` already can't throw — every failure
+path returns `AgentResult.failure(...)`, which becomes a `*_failed` status instead of an uncaught
+exception. That's deliberate reuse of failure handling already built and tested (see 2026-07-15/16
+devlogs) rather than duplicating it at the Kafka layer; `EventConsumer`'s catch is a safety net for
+anything outside the agent call (e.g. the status-store write), not the primary mechanism. A real
+dead-letter-topic + retry policy is still future work.
 
 **Q: You could have wired this with an in-memory queue or just a `@Async` method — why actually
 stand up Kafka?**
@@ -241,6 +305,67 @@ nothing, with the skip reason visible in the app log. This isolates exactly the 
 (`TicketClassifiedConsumer` → `RetrieverAgent` → `ToolRegistry`/`ToolInvoker` → `SearchKbTool`) from
 the classify stage, the same way `@MockBean`-ing `ClassifierAgent` isolates it in the automated
 integration test.
+
+**Q: `TicketRetrieved` carries `ticketBody` from the day it was created, unlike `TicketClassified`
+which had it added after the fact — why the difference?**
+Because the lesson from `TicketClassified` (split out of `TriageResponse` specifically because it
+didn't carry a field `RetrieverAgent` turned out to need) generalizes: any event a Kafka consumer
+publishes for a *next* stage should carry what that next stage will plausibly need, not just what
+the current stage happens to produce. `ResponderAgent` needs the ticket body for the same reason
+`RetrieverAgent` did — grounding its output in the actual ticket, not just derived data — so
+`TicketRetrieved` was given `ticketBody` up front on 2026-07-30 instead of shipping without it and
+discovering the same gap a second time.
+
+**Q: How was the respond stage verified without a real Anthropic API key, same as the retrieve
+stage?**
+Identical isolation technique, one stage further: published a hand-built `TicketRetrieved` JSON
+straight onto `hivemind.triage.retrieved` with `kafka-console-producer.sh` (`status: "retrieved"`,
+one KB chunk, a real ticket body), which triggered `TicketRetrievedConsumer` → `ResponderAgent` →
+a real call to the real Anthropic API with a deliberately invalid key. The fast-failed
+`response_failed` result showed up correctly on `hivemind.triage.responded`, and — the part that
+actually proves the new behavior — `GET /api/v1/triage/tickets/manual-test-3` returned the identical
+status and error, confirming `TicketRetrievedConsumer` genuinely wrote into `TicketStatusStore` and
+not just the topic. Same pattern used for every stage so far: isolate the new consumer by hand-crafting
+its input event, and let the one thing that's genuinely external (Claude) fail for a real, expected
+reason rather than mocking it away entirely.
+
+**Q: Why is `RoutingAgent` deterministic instead of another Claude call, given every other agent
+uses an LLM?**
+Because the decision it makes — auto-resolve, queue for a human, or escalate — is a pure function of
+two things already known by this point in the pipeline: category and confidence (plus whether the
+respond stage succeeded). Routing that through Claude would add latency, cost, and non-determinism
+to a decision that doesn't need any of them, purely to keep a "every agent calls an LLM" pattern
+consistent for its own sake. `BaseAgent<T>`'s contract (`handle(AgentContext) -> AgentResult<T>`)
+doesn't care whether the implementation calls Claude or just evaluates an if/else chain — the
+abstraction was never "agent = LLM call," it was "agent = a step in the pipeline with a typed
+result." `RoutingAgentTest` reflects this: no mocks at all, since there's no external dependency to
+isolate from.
+
+**Q: Why does `TicketRespondedConsumer` break the skip-on-upstream-failure pattern every other
+consumer follows?**
+Because "skip" means something different depending on what's missing. `TicketClassifiedConsumer`
+skips on `classification_failed` because there's no category to search a knowledge base against —
+skipping is correct, there's nothing useful to do. Same for `TicketRetrievedConsumer` skipping on
+`retrieval_failed`. But a `response_failed` ticket isn't missing an input the next stage needs — the
+next stage's whole job *is* deciding what happens to a ticket, and "this ticket had a failure
+somewhere upstream" is itself a valid, important input to that decision. Skipping would leave the
+ticket with no routing decision at all, silently stuck. Escalating it is the correct behavior, not
+an exception to the skip pattern — the pattern was never "always skip on upstream failure," it's
+"do whatever's correct for this specific transition," which for the last stage means never leaving a
+ticket un-routed.
+
+**Q: How was the route stage verified without a real Anthropic API key?**
+It didn't even need a new hand-built message. `RoutingAgent`'s decision depends on the ticket's
+*current* `TriageResponse` read from `TicketStatusStore`, not on the incoming event's own fields —
+so republishing the same kind of hand-built `TicketRetrieved` message already used to verify the
+respond stage cascaded through **both** new consumers in one shot: real Anthropic auth failure →
+`response_failed` written to the store → `TicketRespondedConsumer` reads that status →
+`RoutingAgent` correctly escalates → `TicketRouted{routingDecision: ESCALATE}` on the topic, matched
+by `GET /tickets/{id}`. `AUTO_RESOLVE`/`QUEUE_FOR_HUMAN` aren't reachable this way without a real key
+(the store never holds a real category/confidence pair without a successful classify call) — those
+branches are covered directly by `RoutingAgentTest` instead, which controls the `AgentContext`
+itself and has no store dependency. Two different verification layers covering what each can
+actually reach, not one technique stretched to do both jobs.
 
 ## Tool registry
 
@@ -309,7 +434,116 @@ up, rather than one that's compiled against a specific tool class. Direct inject
 for a system with one tool and one caller; registry lookup is the right shape for the system this is
 built to become.
 
+## Persistence
+
+**Q: Why `JdbcTemplate` instead of Spring Data JPA/Hibernate for the Postgres layer?**
+The schema is one row per ticket (`tickets`, upserted in place) and one row per event
+(`audit_events`, insert-only) — no relationships, no lazy loading, nothing an ORM's entity
+lifecycle would actually help with. JPA would add real complexity (entity state management,
+session/transaction semantics, N+1 query risk) for a workload that's fundamentally two SQL
+statements: an upsert and an insert. `TicketRepository`/`AuditLog` are the same "thin explicit
+wrapper" shape as `EventBus` (wraps `KafkaTemplate`) and `LlmClient` (wraps LangChain4j's
+`ChatModel`) — one seam per external dependency, no framework magic in between.
+
+**Q: Why two tables — `tickets` and `audit_events` — instead of one?**
+Because they answer different questions and have different write patterns. `tickets` answers
+"what does this ticket look like right now" — one row per ticket, overwritten in place as the
+ticket moves through the pipeline (`ON CONFLICT (id) DO UPDATE`). `audit_events` answers "what
+happened, in order" — append-only, one row per event, never updated or deleted. Merging them would
+mean either losing history (a mutable table can't be an audit log) or losing the cheap
+current-state lookup `GET /tickets/{id}` needs (deriving current state from an event log on every
+read is a legitimate pattern — event sourcing — but is more machinery than this system needs today).
+
+**Q: `EventBus.publish()` now writes to Kafka and Postgres in the same call — isn't that two
+side effects from one method, which usually smells like the method is doing too much?**
+It's one side effect conceptually — "publish this event" — implemented as two writes because
+there isn't yet infrastructure to derive one from the other. In a fuller design, Postgres would
+likely be populated by consuming from Kafka (a dedicated audit consumer), keeping `EventBus` doing
+only the Kafka send. That's more machinery (another consumer, another topic subscription, another
+thing that can lag) for a benefit — decoupling the two writes — that doesn't matter yet with one
+producer and no throughput concerns. Direct dual-write was the simpler correct choice for where the
+project actually is: it guarantees the two logs can't drift (one method, two writes, no window
+where a crash leaves Kafka published but Postgres not, or the reverse split across two consumers),
+at the cost of a coupling that would need revisiting if `EventBus` ever needed to scale
+independently of the audit write.
+
+**Q: How does this affect testing — did adding Postgres change every existing test?**
+Yes, and not by choice: Spring Kafka's autoconfigured beans connect *lazily*, so a `@SpringBootTest`
+with no real broker still starts fine. Flyway is the opposite — it connects and runs migrations
+*eagerly* at context startup, so a missing database fails the whole Spring context, not just the
+code that touches it. That meant three existing test classes that never cared about a database
+before this session all needed a real Postgres just to start. Extracted a shared
+`AbstractPostgresIntegrationTest` (`@Testcontainers` base with the container + property wiring) once
+a third class needed the identical setup — the first time this codebase's "wait for a real repeated
+need before extracting" discipline applied to test infrastructure instead of production code.
+
+**Q: What actually proved the Postgres migration works, beyond "the tests pass"?**
+The concrete demo, not just assertions: submitted a ticket, confirmed its row in `tickets` and its
+rows in `audit_events` via direct `psql` queries (not the API), then **killed the running app
+process entirely and started a fresh JVM against the same Postgres container** — `GET
+/api/v1/triage/tickets/{id}` for the same ticket returned identical data. The in-memory
+`TicketStatusStore` this replaced would have lost everything on that restart, silently, with no
+error — durability isn't something you can verify by reading the code, only by actually taking the
+process down and bringing it back up. Flyway's second-boot log (`Successfully validated 2
+migrations`, no re-run) also confirmed the migration mechanism itself is idempotent, not just that
+data survived.
+
 ## Evals
+
+**Q: Why does `TriageEvalRunner` call the four agents directly instead of submitting each eval
+case as a real ticket through the API and Kafka, the way the app actually runs in production?**
+Because an eval run and a production request are answering different questions. A production
+ticket needs replay, independent scaling, and an audit trail — Kafka earns its cost there. An eval
+run needs to score model decision quality across many cases, fast and repeatably — for that, the
+event bus is pure overhead: async polling latency and a source of flakiness that has nothing to do
+with whether the model classified correctly. `TriageKafkaIntegrationTest` already proves the Kafka
+wiring works; the eval harness's job is a different one, so it reuses the same agents (identical
+business logic) through a different, more direct execution path.
+
+**Q: `docs/EVALS.md`'s schema always includes an `expected.routing` field — why is
+`TriageEvalCase.expectedRouting` nullable, and usually null, in the actual implementation?**
+Because routing depends on model confidence, and confidence isn't something a human authoring a
+gold-labeled ticket can know in advance — it's an output of running the classifier, not an input a
+test case controls. The one case where routing *is* predictable regardless of confidence is
+`ABUSE` (`RoutingAgent` escalates on category alone), so that's the only case asserting it. A null
+`expectedRouting` scores as "not applicable," not "must literally be null" — the scorer skips the
+check entirely rather than penalizing every non-abuse case for a property the eval author
+genuinely couldn't have known.
+
+**Q: The eval cases reuse specific word forms from the knowledge-base chunk text almost verbatim
+— isn't that cheating, making the retrieval score look better than it should?**
+It's testing what's actually there, honestly. `SearchKbTool`'s scorer (2026-07-20) is naive keyword
+overlap with no stemming — "payment" and "payments" are different tokens to it. Writing eval-case
+tickets in more naturally varied language would under-test citation recall against the *current*
+implementation, producing a lower score that reflects the eval wording, not a real system
+limitation. The honest thing is to write cases that exercise the system as it genuinely works today;
+when `SearchKbTool` is upgraded to real BM25 or embeddings (both explicitly on the roadmap), the
+same cases will still be valid — they'll just also start passing with more naturally-varied wording,
+which is itself a good regression signal for that future change.
+
+**Q: Walk me through a real bug from building this.**
+`TriageEvalHarnessRunner` calls `SpringApplication.exit(applicationContext, () -> passed ? 0 : 1)`
+to gate a CI-style pass/fail. First version stopped there — the log line correctly said `Eval run
+FAILED gating thresholds`, but the process exit code was always `0`. `SpringApplication.exit(...)`
+only *computes* an exit code and closes the Spring context; it doesn't call `System.exit(...)`
+itself, so nothing actually told the JVM to terminate non-zero. A CI step checking `$?` would have
+seen a failing run reported as a pass. Fixed with `System.exit(SpringApplication.exit(...))`. Found
+by literally running the packaged jar (`java -jar target/hivemind-*.jar
+--spring.profiles.active=eval`) and checking `$?` directly rather than trusting that a correct-looking
+log line meant the mechanism worked — the log output was byte-for-byte identical before and after
+the fix, so reading logs alone would never have caught it.
+
+**Q: How was the harness verified to actually gate correctly, without a real Anthropic key to
+produce a passing run?**
+By confirming it fails *correctly* — which is itself real, useful behavior to verify. Ran it with a
+deliberately invalid key: every case genuinely errors at the classify step (a real Anthropic auth
+error per case, not a stub), `categoryAccuracy` computes to exactly `0.0`, the run logs as failing
+gating, and the process exits `1`. That's precisely what should happen to a broken pipeline, and
+precisely the behavior a real CI gate depends on. A harness that can't be shown to fail correctly
+isn't trustworthy even if it might pass correctly; this is the same reasoning behind checking
+`ToolInvoker`'s and `LlmClient`'s failure paths as carefully as their success paths.
+
+## Observability
 *(not yet implemented)*
 
 ## Observability

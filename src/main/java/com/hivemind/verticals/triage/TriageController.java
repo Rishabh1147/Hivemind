@@ -1,5 +1,6 @@
 package com.hivemind.verticals.triage;
 
+import com.hivemind.infra.persistence.TicketRepository;
 import com.hivemind.platform.messaging.EventBus;
 import com.hivemind.verticals.triage.events.ClassifyRequested;
 import com.hivemind.verticals.triage.messaging.TriageTopics;
@@ -21,11 +22,11 @@ import java.util.UUID;
 public class TriageController {
 
     private final EventBus eventBus;
-    private final TicketStatusStore ticketStatusStore;
+    private final TicketRepository ticketRepository;
 
-    public TriageController(EventBus eventBus, TicketStatusStore ticketStatusStore) {
+    public TriageController(EventBus eventBus, TicketRepository ticketRepository) {
         this.eventBus = eventBus;
-        this.ticketStatusStore = ticketStatusStore;
+        this.ticketRepository = ticketRepository;
     }
 
     @PostMapping("/tickets")
@@ -33,7 +34,7 @@ public class TriageController {
         String ticketId = UUID.randomUUID().toString();
 
         TriageResponse pending = TriageResponse.pending(ticketId);
-        ticketStatusStore.put(pending);
+        ticketRepository.put(pending);
         eventBus.publish(TriageTopics.CLASSIFY, ticketId, new ClassifyRequested(ticketId, ticket.body()));
 
         return ResponseEntity.accepted().body(pending);
@@ -41,7 +42,7 @@ public class TriageController {
 
     @GetMapping("/tickets/{id}")
     public ResponseEntity<TriageResponse> status(@PathVariable String id) {
-        return ticketStatusStore.get(id)
+        return ticketRepository.get(id)
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
     }

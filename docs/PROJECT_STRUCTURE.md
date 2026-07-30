@@ -10,8 +10,9 @@ This file is the structural map — what lives where, and what's built vs.
 still planned (`✅` = real code today, no mark = planned, described here
 so the eventual file lands in the right place). For the deep "what does
 this actually do, end to end, and why is it built this way," see
-[../OVERVIEW.md](../OVERVIEW.md) — that doc explains behavior and
-rationale; this one just explains layout.
+[../docs/ARCHITECTURE.md](ARCHITECTURE.md) (git-tracked, for anyone
+reading the repo) — there's also a root-level `OVERVIEW.md`, but that one
+is a personal, gitignored prep doc, not part of the repo for other readers.
 
 ## Top-level layout
 
@@ -19,11 +20,11 @@ rationale; this one just explains layout.
 Hivemind/
 ├── pom.xml                               ✅
 ├── README.md                             ✅
-├── OVERVIEW.md                           ✅ living doc — the complete "what/why", updated every session
-├── docker-compose.yml                    ✅ local dev Kafka (KRaft). Postgres + Redis added later
+├── OVERVIEW.md                           (gitignored — personal prep doc, not part of the tracked repo)
+├── docker-compose.yml                    ✅ local dev Kafka (KRaft) + Postgres. Redis added later
 ├── docs/
 │   ├── ARCHITECTURE.md                   ✅
-│   ├── EVALS.md                          ✅ (design only — harness not built yet)
+│   ├── EVALS.md                          ✅ design doc — harness now built (verticals/triage/eval/), 10 of the 50+ target cases exist
 │   ├── EXTENDING.md                      ✅
 │   ├── PROJECT_STRUCTURE.md              ✅ this file
 │   ├── INTERVIEW_PREP.md                 ✅ cumulative Q&A, topic-organized
@@ -32,8 +33,8 @@ Hivemind/
 │   └── workflows/
 │       ├── ci.yml                        # build + tests + evals — not added yet
 │       └── deploy.yml                    # K8s deploy — not added yet
-├── evals/                                # eval case JSON files — not added yet
-│   └── triage/
+├── evals/
+│   └── triage/                           ✅ 10 hand-written *.json cases (target: 50+, per docs/EVALS.md)
 ├── k8s/                                  # not added yet
 ├── frontend/                             # Next.js dashboard — not added yet
 └── src/
@@ -45,9 +46,9 @@ Hivemind/
     │   │   └── infra/                    ✅ Spring config, persistence wiring
     │   └── resources/
     │       ├── application.yml           ✅
-    │       └── db/migration/             # Flyway migrations — not added yet (no DB yet)
+    │       └── db/migration/             ✅ V1__create_tickets_table.sql, V2__create_audit_events_table.sql
     └── test/
-        └── java/com/hivemind/            ✅ 10 test classes, 21 tests
+        └── java/com/hivemind/            ✅ 14 test classes, 35 tests (incl. shared AbstractPostgresIntegrationTest base)
 ```
 
 ## `com.hivemind.platform` — the vertical-agnostic core
@@ -72,23 +73,27 @@ platform/
 ├── memory/
 │   ├── ShortTermMemory.java              # Redis — not built
 │   ├── LongTermMemory.java               # pgvector — not built
-│   └── AuditLog.java                     # Postgres, immutable append-only — not built (TicketStatusStore is the in-memory stand-in today)
+│   └── AuditLog.java                     ✅ Postgres, immutable append-only. JdbcTemplate-backed; EventBus.publish() writes here alongside every Kafka send
 ├── llm/
 │   ├── LlmClient.java                    ✅ LangChain4j wrapper, retry/backoff, doChat test seam
 │   └── CostTracker.java                  # tokens → USD — not built
 ├── messaging/
 │   ├── EventBus.java                     ✅ Kafka producer wrapper (JSON via Jackson)
-│   ├── EventConsumer.java                # generic consumer base — not built yet, but no longer speculative: two concrete consumers share this shape now, see OVERVIEW.md
+│   ├── EventConsumer.java                ✅ generic consumer base — deserialize, catch-and-log onEvent; all four triage consumers extend it
 │   └── TopicNaming.java                  ✅ hivemind.<vertical>.<stage> convention helper
 ├── observability/
 │   ├── OtelConfig.java                   # not built
 │   └── MetricsRecorder.java              # not built
-└── eval/
-    ├── EvalCase.java                     # not built
-    ├── EvalRunner.java                   # not built
-    ├── EvalScorer.java                   # not built
-    └── EvalReport.java                   # not built
+└── eval/                                  # not built here — see verticals/triage/eval/ below
 ```
+
+**`platform/eval/` deliberately doesn't exist yet**, even though this file originally sketched
+`EvalCase`/`EvalRunner`/`EvalScorer`/`EvalReport` as platform-level. With only one vertical, a
+generic contract would be guessing at what varies across verticals from a single example — the same
+discipline that kept `ToolRegistry`, `EventConsumer`, and `JitteredExponentialBackoff` unbuilt or
+un-extracted until a second real case existed. The eval harness was built triage-specific instead
+(`verticals/triage/eval/`, below); generalizing into `platform/eval/` is deferred until CodeScout
+(v2) needs eval scoring too.
 
 **Rule**: nothing in `platform/` may reference `com.hivemind.verticals.*`.
 
@@ -100,20 +105,31 @@ Each vertical owns a sibling subpackage. Only `triage/` exists so far.
 verticals/
 └── triage/
     ├── TriageController.java             ✅ POST /api/v1/triage/tickets (202), GET /tickets/{id}
-    ├── TicketStatusStore.java            ✅ in-memory read model — stand-in for platform/memory/AuditLog
     ├── agents/
     │   ├── ClassifierAgent.java          ✅ @AgentRole(vertical="triage", role="classifier")
     │   ├── RetrieverAgent.java           ✅ @AgentRole(vertical="triage", role="retriever"), calls searchKb via ToolRegistry+ToolInvoker
-    │   ├── TriageContextKeys.java        ✅ shared AgentContext keys (ticketBody) — used by both agents above
-    │   └── ResponderAgent.java           # not built — next candidate, would consume hivemind.triage.retrieved
+    │   ├── ResponderAgent.java           ✅ @AgentRole(vertical="triage", role="responder"), drafts answer + citations via LlmClient
+    │   ├── RoutingAgent.java             ✅ @AgentRole(vertical="triage", role="router"), deterministic policy — no LlmClient call
+    │   └── TriageContextKeys.java        ✅ shared AgentContext keys (ticketBody, retrievedChunks, currentTriageResponse) — used by all four agents above
     ├── messaging/
-    │   ├── TriageTopics.java             ✅ CLASSIFY / CLASSIFIED / RETRIEVED topic name constants
-    │   ├── ClassifyRequestConsumer.java  ✅ @KafkaListener, runs ClassifierAgent, publishes TicketClassified
-    │   └── TicketClassifiedConsumer.java ✅ @KafkaListener, runs RetrieverAgent, publishes TicketRetrieved
+    │   ├── TriageTopics.java             ✅ CLASSIFY / CLASSIFIED / RETRIEVED / RESPONDED / ROUTED topic name constants
+    │   ├── ClassifyRequestConsumer.java  ✅ extends EventConsumer, runs ClassifierAgent, publishes TicketClassified
+    │   ├── TicketClassifiedConsumer.java ✅ extends EventConsumer, runs RetrieverAgent, publishes TicketRetrieved
+    │   ├── TicketRetrievedConsumer.java  ✅ extends EventConsumer, runs ResponderAgent, publishes TicketResponded, writes TicketRepository
+    │   └── TicketRespondedConsumer.java  ✅ extends EventConsumer, runs RoutingAgent, publishes TicketRouted, writes TicketRepository (never skips, even on response_failed)
     ├── events/
     │   ├── ClassifyRequested.java        ✅ {ticketId, body} — the classify-request payload
     │   ├── TicketClassified.java         ✅ {ticketId, ticketBody, status, category, confidence, error} — classify result, carries body for the retrieve stage
-    │   └── TicketRetrieved.java          ✅ {ticketId, status, chunks, error} — retrieve result
+    │   ├── TicketRetrieved.java          ✅ {ticketId, ticketBody, status, chunks, error} — retrieve result, carries body for the respond stage
+    │   ├── TicketResponded.java          ✅ {ticketId, status, answer, citedChunkIds, error} — respond result
+    │   └── TicketRouted.java             ✅ {ticketId, status, routingDecision, error} — final route result
+    ├── eval/
+    │   ├── TriageEvalCase.java            ✅ {id, ticket, expectedCategory, expectedRouting, mustCite} — loaded from evals/triage/*.json
+    │   ├── TriageEvalResult.java          ✅ one case's scored outcome
+    │   ├── TriageEvalReport.java          ✅ aggregate accuracy/recall/latency, written to eval-results/<timestamp>.json
+    │   ├── TriageEvalScorer.java          ✅ pure comparison logic, unit-tested with no agents/mocks
+    │   ├── TriageEvalRunner.java          ✅ runs all 4 agents in-process per case (no Kafka — evals score model quality, not event-bus plumbing)
+    │   └── TriageEvalHarnessRunner.java   ✅ CommandLineRunner, @Profile("eval"), gates on hivemind.eval.thresholds.*, real exit code
     ├── kb/
     │   ├── KbChunk.java                  ✅ {id, title, text}
     │   └── KnowledgeBase.java            ✅ 5 hardcoded chunks — stand-in for a Postgres-backed KB
@@ -127,10 +143,14 @@ verticals/
         ├── Ticket.java                   ✅ inbound DTO {body}
         ├── Category.java                 ✅ BILLING/BUG/FEATURE_REQUEST/ABUSE/OTHER
         ├── Classification.java           ✅ {category, confidence}
-        ├── TriageResponse.java           ✅ outbound DTO only now — Kafka payloads split out to events/ (2026-07-21)
-        ├── RoutingDecision.java          # not built
-        └── DraftResponse.java            # not built
+        ├── DraftResponse.java            ✅ {answer, citedChunkIds} — ResponderAgent output
+        ├── RoutingDecision.java          ✅ AUTO_RESOLVE/QUEUE_FOR_HUMAN/ESCALATE — RoutingAgent output
+        └── TriageResponse.java           ✅ outbound DTO, progressively enriched (pending → classified → responded → routed) via with*() methods
 ```
+
+Every file originally sketched in the Day-1 scaffold plan under `verticals/triage/agents/` and
+`verticals/triage/model/` is now built — the four planned-but-unbuilt tool files above are the only
+remaining placeholders in this vertical.
 
 When CodeScout (v2) and DeepDigger (v3) ship, they'll be siblings under
 `verticals/`. They will not modify any `platform/` code.
@@ -140,13 +160,13 @@ When CodeScout (v2) and DeepDigger (v3) ship, they'll be siblings under
 ```
 infra/
 ├── config/
-│   ├── KafkaConfig.java                  ✅ NewTopic beans for triage's three topics
+│   ├── KafkaConfig.java                  ✅ NewTopic beans for triage's five topics
 │   ├── ClaudeConfig.java                 ✅ LangChain4j AnthropicChatModel bean
-│   ├── PostgresConfig.java               # not built — no DB yet
+│   ├── PostgresConfig.java               # not built — spring-boot-starter-jdbc autoconfigures the DataSource/JdbcTemplate, nothing custom needed yet
 │   └── RedisConfig.java                  # not built
 └── persistence/
-    ├── TicketRepository.java             # not built
-    ├── AuditEventRepository.java         # not built
+    ├── TicketRepository.java             ✅ JdbcTemplate-backed current-state store, replaces the old in-memory TicketStatusStore
+    ├── AuditEventRepository.java         # not built — AuditLog (platform/memory/) covers this role directly for now
     └── KbChunkRepository.java            # not built (pgvector)
 ```
 
@@ -160,19 +180,25 @@ wiring, not domain logic), unlike `platform/`.
 
 ```
 resources/
-├── application.yml                       ✅ spring.kafka.*, hivemind.llm.*, hivemind.tool.*, hivemind.eval.* (eval thresholds configured but unused — no harness yet)
+├── application.yml                       ✅ spring.kafka.*, spring.datasource.*, spring.flyway.*, hivemind.llm.*, hivemind.tool.*, hivemind.eval.* (thresholds now read by TriageEvalHarnessRunner)
 ├── application-local.yml                 # not added yet
-├── application-test.yml                  # not added yet
-└── db/migration/                         # Flyway migrations — not added yet (no DB yet)
+├── application-test.yml                  # not added yet — tests override datasource/kafka props via Testcontainers instead
+└── db/migration/
+    ├── V1__create_tickets_table.sql      ✅ current-state read model
+    └── V2__create_audit_events_table.sql ✅ immutable append-only log
 ```
 
 ## Evals — outside `src/`
 
-Eval cases are **data**, not source code. They'll live in `evals/<vertical>/`
+Eval cases are **data**, not source code. They live in `evals/<vertical>/`
 at the repo root so they can be edited by humans, possibly by non-engineers
-later, without classpath bloat or recompilation. Not built yet — thresholds
-are configured in `application.yml` (`hivemind.eval.thresholds.*`) but
-nothing reads them.
+later, without classpath bloat or recompilation — `evals/triage/` has 10
+cases today. Run cases with `./mvnw spring-boot:run -Dspring-boot.run.profiles=eval`;
+results land in `eval-results/<timestamp>.json` (gitignored). Thresholds in
+`application.yml` (`hivemind.eval.thresholds.*`) are now read and gated on
+by `TriageEvalHarnessRunner` — `category-accuracy`, `citation-recall`, and
+`p95-latency-ms` only; `tone-min-avg` and `cost-per-ticket-usd` stay
+configured but ungated (see `docs/EVALS.md` for why).
 
 ## Frontend — separate sibling
 
@@ -180,18 +206,21 @@ The Next.js dashboard lives in `frontend/` at the repo root, once built.
 It is a sibling of the Spring Boot app, not a Spring resource. It builds
 and deploys independently.
 
-## Current state (as of 2026-07-21)
+## Current state (as of 2026-07-30, session 10)
 
-Real code exists in `platform/agent`, `platform/llm`, `platform/messaging`,
-`platform/tool`, `platform/retry`, all of `verticals/triage` except the
-Responder agent and four of the five planned tools, and
-`infra/config/{KafkaConfig,ClaudeConfig}`. Local Kafka runs via
-`docker-compose.yml`, now carrying two chained consumers
-(classify → retrieve) instead of one. Nothing under `k8s/`, `frontend/`,
-`evals/`, `db/migration/`, or `.github/workflows/` exists yet — those are
-still purely descriptions, filled in as their sessions come up.
+Real code exists in `platform/agent`, `platform/llm`, `platform/messaging`
+(including the generic `EventConsumer` base and `AuditLog`), `platform/tool`,
+`platform/retry`, all of `verticals/triage` except four planned tool files,
+and `infra/{config,persistence}`. Local Kafka and Postgres both run via
+`docker-compose.yml` — Kafka carrying four chained consumers (classify →
+retrieve → respond → route), Postgres backing both `TicketRepository`
+(current state) and `AuditLog` (immutable event history). `evals/triage/`
+has 10 real cases, run via the `eval` Spring profile. Nothing under `k8s/`,
+`frontend/`, or `.github/workflows/` exists yet — those are still purely
+descriptions, filled in as their sessions come up.
 
 For the full narrative — what each of these pieces actually does, the
 request lifecycle as it genuinely runs today, and the reasoning behind
-every structural choice above — see [../OVERVIEW.md](../OVERVIEW.md).
-Day-by-day history of how it got here lives in [devlog/](devlog/).
+every structural choice above — see [ARCHITECTURE.md](ARCHITECTURE.md)
+(git-tracked) or the root `OVERVIEW.md` (personal, gitignored, not visible
+to other readers of this repo). Day-by-day history lives in [devlog/](devlog/).

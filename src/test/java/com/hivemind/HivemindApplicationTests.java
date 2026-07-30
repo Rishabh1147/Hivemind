@@ -4,7 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest(properties = "hivemind.llm.api-key=test-key")
-class HivemindApplicationTests {
+class HivemindApplicationTests extends AbstractPostgresIntegrationTest {
 
     @Test
     void contextLoads() {

@@ -1,5 +1,6 @@
 package com.hivemind.platform.tool;
 
+import com.hivemind.AbstractPostgresIntegrationTest;
 import com.hivemind.verticals.triage.kb.KbChunk;
 import com.hivemind.verticals.triage.tools.SearchKbTool;
 import org.junit.jupiter.api.Test;
@@ -16,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link ToolInvoker} (the same path any future agent would use) returns real results.
  */
 @SpringBootTest(properties = "hivemind.llm.api-key=test-key")
-class ToolRegistrationIntegrationTest {
+class ToolRegistrationIntegrationTest extends AbstractPostgresIntegrationTest {
 
     @Autowired
     private ToolRegistry toolRegistry;

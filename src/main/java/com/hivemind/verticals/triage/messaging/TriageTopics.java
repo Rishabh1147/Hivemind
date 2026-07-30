@@ -11,6 +11,8 @@ public final class TriageTopics {
     public static final String CLASSIFY = "hivemind.triage.classify";
     public static final String CLASSIFIED = "hivemind.triage.classified";
     public static final String RETRIEVED = "hivemind.triage.retrieved";
+    public static final String RESPONDED = "hivemind.triage.responded";
+    public static final String ROUTED = "hivemind.triage.routed";
 
     private TriageTopics() {
     }

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hivemind.platform.agent.AgentContext;
 import com.hivemind.platform.agent.AgentResult;
 import com.hivemind.platform.messaging.EventBus;
+import com.hivemind.platform.messaging.EventConsumer;
 import com.hivemind.verticals.triage.agents.RetrieverAgent;
 import com.hivemind.verticals.triage.agents.TriageContextKeys;
 import com.hivemind.verticals.triage.events.TicketClassified;
@@ -23,38 +24,33 @@ import java.util.List;
  * classification are skipped — there's nothing meaningful to search for on a ticket whose category
  * is unknown.
  *
- * <p>Unlike {@link ClassifyRequestConsumer}, this stage doesn't write into {@code TicketStatusStore}:
- * {@code GET /api/v1/triage/tickets/{id}} still reports {@code classified}, since there's no
- * Responder yet to consume retrieved chunks into a user-visible result. Retrieval is verified today
- * by reading {@link TriageTopics#RETRIEVED} directly, the same way the event log is meant to double
- * as the audit trail for every stage.
+ * <p>Unlike {@link ClassifyRequestConsumer}, this stage doesn't write into
+ * {@code com.hivemind.infra.persistence.TicketRepository}:
+ * {@code GET /api/v1/triage/tickets/{id}} still reports {@code classified}, since surfacing anything
+ * past retrieval is {@code TicketRetrievedConsumer}'s job once a response is actually drafted.
  */
 @Component
-public class TicketClassifiedConsumer {
+public class TicketClassifiedConsumer extends EventConsumer<TicketClassified> {
 
     private static final Logger log = LoggerFactory.getLogger(TicketClassifiedConsumer.class);
     private static final String CLASSIFIED_STATUS = "classified";
 
     private final RetrieverAgent retrieverAgent;
     private final EventBus eventBus;
-    private final ObjectMapper objectMapper;
 
     public TicketClassifiedConsumer(RetrieverAgent retrieverAgent, EventBus eventBus, ObjectMapper objectMapper) {
+        super(objectMapper, TicketClassified.class);
         this.retrieverAgent = retrieverAgent;
         this.eventBus = eventBus;
-        this.objectMapper = objectMapper;
     }
 
     @KafkaListener(topics = TriageTopics.CLASSIFIED)
     public void onTicketClassified(String rawJson) {
-        TicketClassified event;
-        try {
-            event = objectMapper.readValue(rawJson, TicketClassified.class);
-        } catch (Exception e) {
-            log.error("Dropping unparseable {} message: {}", TriageTopics.CLASSIFIED, e.getMessage());
-            return;
-        }
+        consume(rawJson);
+    }
 
+    @Override
+    protected void onEvent(TicketClassified event) {
         if (!CLASSIFIED_STATUS.equals(event.status())) {
             log.info("Skipping retrieval for ticket {} (classification status: {})", event.ticketId(), event.status());
             return;
@@ -65,8 +61,8 @@ public class TicketClassifiedConsumer {
         AgentResult<List<KbChunk>> result = retrieverAgent.handle(context);
 
         TicketRetrieved retrieved = result.success()
-                ? new TicketRetrieved(event.ticketId(), "retrieved", result.payload(), null)
-                : new TicketRetrieved(event.ticketId(), "retrieval_failed", List.of(), result.errorMessage());
+                ? new TicketRetrieved(event.ticketId(), event.ticketBody(), "retrieved", result.payload(), null)
+                : new TicketRetrieved(event.ticketId(), event.ticketBody(), "retrieval_failed", List.of(), result.errorMessage());
 
         eventBus.publish(TriageTopics.RETRIEVED, event.ticketId(), retrieved);
     }
