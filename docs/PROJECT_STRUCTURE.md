@@ -31,7 +31,7 @@ Hivemind/
 │   └── devlog/                           ✅ one file per session, e.g. 2026-07-20.md
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                        # build + tests + evals — not added yet
+│       ├── ci.yml                        ✅ build + 35 tests on every push/PR to main — evals deliberately not gated here yet (cost/secrets, see EVALS.md)
 │       └── deploy.yml                    # K8s deploy — not added yet
 ├── evals/
 │   └── triage/                           ✅ 10 hand-written *.json cases (target: 50+, per docs/EVALS.md)
@@ -162,6 +162,7 @@ infra/
 ├── config/
 │   ├── KafkaConfig.java                  ✅ NewTopic beans for triage's five topics
 │   ├── ClaudeConfig.java                 ✅ LangChain4j AnthropicChatModel bean
+│   ├── TracingConfig.java                ✅ LoggingSpanExporter bean — the only wiring OTel tracing needs; Tracer/Propagator are autoconfigured
 │   ├── PostgresConfig.java               # not built — spring-boot-starter-jdbc autoconfigures the DataSource/JdbcTemplate, nothing custom needed yet
 │   └── RedisConfig.java                  # not built
 └── persistence/

@@ -12,6 +12,9 @@ import com.hivemind.verticals.triage.events.TicketRetrieved;
 import com.hivemind.verticals.triage.events.TicketResponded;
 import com.hivemind.verticals.triage.model.DraftResponse;
 import com.hivemind.verticals.triage.model.TriageResponse;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -41,16 +44,21 @@ public class TicketRetrievedConsumer extends EventConsumer<TicketRetrieved> {
     private final TicketRepository ticketRepository;
 
     public TicketRetrievedConsumer(
-            ResponderAgent responderAgent, EventBus eventBus, TicketRepository ticketRepository, ObjectMapper objectMapper) {
-        super(objectMapper, TicketRetrieved.class);
+            ResponderAgent responderAgent,
+            EventBus eventBus,
+            TicketRepository ticketRepository,
+            ObjectMapper objectMapper,
+            Tracer tracer,
+            Propagator propagator) {
+        super(objectMapper, TicketRetrieved.class, tracer, propagator);
         this.responderAgent = responderAgent;
         this.eventBus = eventBus;
         this.ticketRepository = ticketRepository;
     }
 
     @KafkaListener(topics = TriageTopics.RETRIEVED)
-    public void onTicketRetrieved(String rawJson) {
-        consume(rawJson);
+    public void onTicketRetrieved(ConsumerRecord<String, String> record) {
+        consume(record.value(), record.headers());
     }
 
     @Override

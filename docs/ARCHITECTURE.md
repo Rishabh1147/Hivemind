@@ -61,6 +61,14 @@ Initial TriageBot tools: `searchKB`, `searchPastTickets`,
 
 ## Observability
 
+*Implementation status (as of 2026-08-01, session 12): HTTP spans and Kafka producer/consumer spans
+are real — Micrometer Tracing + the OpenTelemetry bridge, wired through `EventBus`/`EventConsumer` so
+trace context propagates via Kafka headers across every stage. LLM spans (with the token/cost
+attributes below) and tool spans are not instrumented yet. Exporting is a `LoggingSpanExporter`
+(spans as log lines) — real and verified, but not Prometheus/Grafana; see the 2026-08-01-session12
+devlog for the "why the logging exporter for now" reasoning and how propagation was verified against
+real infrastructure.*
+
 OpenTelemetry instruments:
 
 - HTTP spans (incoming + outgoing)

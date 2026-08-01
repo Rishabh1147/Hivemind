@@ -24,6 +24,10 @@ server:
   port: 8080
 
 management:
+  tracing:
+    sampling:
+      # 100% for a low-traffic portfolio demo — a real deployment would sample well below 1.0.
+      probability: 1.0
   endpoints:
     web:
       exposure:

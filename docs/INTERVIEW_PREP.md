@@ -543,11 +543,74 @@ precisely the behavior a real CI gate depends on. A harness that can't be shown 
 isn't trustworthy even if it might pass correctly; this is the same reasoning behind checking
 `ToolInvoker`'s and `LlmClient`'s failure paths as carefully as their success paths.
 
-## Observability
-*(not yet implemented)*
+## CI / delivery
+
+**Q: The eval harness has been ready to gate CI since session 10 — why doesn't the GitHub Actions
+workflow (session 11) actually run it?**
+Cost and secrets, weighed honestly rather than defaulted past. Running the eval harness means real
+Claude API calls — a live `ANTHROPIC_API_KEY` would have to sit in GitHub Actions secrets, and every
+push/PR would burn real money, for a project still at 10 of the 50+ target eval cases. `./mvnw test`
+(35 tests) needs neither: Testcontainers spins up its own Postgres and Kafka per test class, so the
+whole suite is self-contained and free to run on every push. The eval harness stays a deliberate,
+local/manual gate for now — the honest state is "CI-gated on tests, not yet on evals," not "CI-gated"
+unqualified. Revisit once the eval set and the interview story around cost justify the spend.
+
+**Q: Why is `./mvnw test` alone sufficient as the whole CI command — no separate integration-test
+phase?**
+There's no Failsafe plugin in `pom.xml`, so Surefire's default `**/*Test.java` include pattern
+already picks up every test class, unit and Testcontainers-integration alike
+(`TriageKafkaIntegrationTest`, `HivemindApplicationTests`). One Maven phase, one command. GitHub's
+`ubuntu-latest` runners ship Docker pre-installed, so Testcontainers needs no extra CI setup either —
+verified by running the exact `./mvnw -B test` command locally before trusting it on a runner.
 
 ## Observability
-*(not yet implemented)*
+
+**Q: How does one trace id follow a ticket across four independent, asynchronous Kafka consumers
+without the trace id ever being part of the event payload itself?**
+Through Kafka message headers, not the JSON body. `EventBus.publish()` is the one place every
+vertical sends a message through (never `KafkaTemplate` directly), so it's the one place trace
+context needs injecting: it opens a span as a child of whatever span is current on the calling
+thread, then uses Micrometer Tracing's `Propagator.inject(...)` to write that span's context into
+the `ProducerRecord`'s headers. `EventConsumer.consume()` — the shared base every `@KafkaListener`
+extends — is the mirror image: it reads those headers back out with `Propagator.extract(...)` and
+runs the agent inside a span that's a child of whatever it just extracted. Because publish always
+asks "what span is current," and every consumer's `onEvent` publishes the next stage's event from
+*inside* the span it just extracted, the chain nests automatically: HTTP request span → publish
+`classify` → consume `classify` → publish `classified` → consume `classified` → ... No code anywhere
+passes a trace id as data; the propagation is entirely a side effect of the two shared seams
+(`EventBus`, `EventConsumer`) every stage already went through for other reasons.
+
+**Q: Why the logging exporter instead of standing up Jaeger or an OTLP collector?**
+Same "don't build the second thing until the first thing needs it" discipline used everywhere else
+in this codebase. A `LoggingSpanExporter` bean is the entire wiring cost — one `@Bean` method — and
+it's enough to prove the mechanism works: grep the logs for a trace id and see every span that shares
+it. A real backend is a one-bean swap later (add an OTLP exporter, point it at a collector), not a
+rewrite; standing up Jaeger now to demo something a log grep already proves would be infrastructure
+for its own sake.
+
+**Q: How was propagation actually verified, versus just "the code compiles and looks right"?**
+Real infra, real Kafka hop, real log output — not a unit test with a mocked `Propagator`. Started
+`docker-compose` (Kafka + Postgres), ran the app with a deliberately invalid Anthropic key (the same
+constraint every session's manual verification has had — no working key available), POSTed one
+ticket, and grepped the `LoggingSpanExporter` output. Five spans came back sharing one trace id:
+the HTTP `POST` span (autoconfigured, no code written for it), `kafka.publish classify`,
+`kafka.consume ClassifyRequested`, `kafka.publish classified`, `kafka.consume TicketClassified` — the
+chain stopping there because classification genuinely failed on the bad key and
+`TicketClassifiedConsumer` correctly skips retrieval for a failed classification, same behavior every
+prior session's dummy-key run has shown. The propagation mechanism is identical at every hop, so
+proving it for real at the first two is strong evidence for the rest, but a full trace through
+retrieve/respond/route still needs a real key to actually witness end to end.
+
+**Q: None of the spans in that verification run carry an error tag, even though classification
+failed. Is that a bug in the tracing code?**
+No — it's `EventConsumer`'s span only calling `span.error(e)` inside its `catch (Exception e)` block,
+and `ClassifierAgent`'s failure never throwing. Failure is data here (`AgentResult.failure(...)`),
+per this codebase's standing rule that anything crossing a boundary (an HTTP controller, a Kafka
+listener) surfaces failure as a return value, not an exception — so the span correctly reports
+"nothing exceptional happened," even though the *business outcome* was a failure. If a real bug ever
+made an agent throw instead of returning a typed failure, that would show up as a red-flagged span —
+which is itself a useful, if accidental, property of keeping the two concepts (thrown exceptions vs.
+domain failures) distinct.
 
 ## Scaling
 *(not yet implemented)*

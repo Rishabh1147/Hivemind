@@ -12,6 +12,9 @@ import com.hivemind.verticals.triage.events.ClassifyRequested;
 import com.hivemind.verticals.triage.events.TicketClassified;
 import com.hivemind.verticals.triage.model.Classification;
 import com.hivemind.verticals.triage.model.TriageResponse;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
@@ -33,16 +36,18 @@ public class ClassifyRequestConsumer extends EventConsumer<ClassifyRequested> {
             ClassifierAgent classifierAgent,
             EventBus eventBus,
             TicketRepository ticketRepository,
-            ObjectMapper objectMapper) {
-        super(objectMapper, ClassifyRequested.class);
+            ObjectMapper objectMapper,
+            Tracer tracer,
+            Propagator propagator) {
+        super(objectMapper, ClassifyRequested.class, tracer, propagator);
         this.classifierAgent = classifierAgent;
         this.eventBus = eventBus;
         this.ticketRepository = ticketRepository;
     }
 
     @KafkaListener(topics = TriageTopics.CLASSIFY)
-    public void onClassifyRequested(String rawJson) {
-        consume(rawJson);
+    public void onClassifyRequested(ConsumerRecord<String, String> record) {
+        consume(record.value(), record.headers());
     }
 
     @Override
