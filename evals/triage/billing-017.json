@@ -1,0 +1,7 @@
+{
+  "id": "billing-017",
+  "ticket": "Payment failed on my subscription renewal and it's now marked past due — how many retries happen before the subscription is suspended?",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-failed-payment"]
+}

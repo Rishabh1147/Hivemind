@@ -1,0 +1,7 @@
+{
+  "id": "billing-014",
+  "ticket": "I got a notice that my payment failed and my subscription is marked past due. How many times will the failed payment be retried before cancellation?",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-failed-payment"]
+}

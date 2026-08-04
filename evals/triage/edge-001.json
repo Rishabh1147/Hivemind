@@ -1,0 +1,7 @@
+{
+  "id": "edge-001",
+  "ticket": "My payment went through but the app still shows my subscription as past due and won't let me log in. My last payment failed once before this — is that related?",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-failed-payment"]
+}

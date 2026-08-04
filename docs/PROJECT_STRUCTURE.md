@@ -24,7 +24,7 @@ Hivemind/
 ├── docker-compose.yml                    ✅ local dev Kafka (KRaft) + Postgres. Redis added later
 ├── docs/
 │   ├── ARCHITECTURE.md                   ✅
-│   ├── EVALS.md                          ✅ design doc — harness now built (verticals/triage/eval/), 10 of the 50+ target cases exist
+│   ├── EVALS.md                          ✅ design doc — harness now built (verticals/triage/eval/), 53 of the 50+ target cases exist
 │   ├── EXTENDING.md                      ✅
 │   ├── PROJECT_STRUCTURE.md              ✅ this file
 │   ├── INTERVIEW_PREP.md                 ✅ cumulative Q&A, topic-organized
@@ -34,7 +34,7 @@ Hivemind/
 │       ├── ci.yml                        ✅ build + 35 tests on every push/PR to main — evals deliberately not gated here yet (cost/secrets, see EVALS.md)
 │       └── deploy.yml                    # K8s deploy — not added yet
 ├── evals/
-│   └── triage/                           ✅ 10 hand-written *.json cases (target: 50+, per docs/EVALS.md)
+│   └── triage/                           ✅ 53 hand-written *.json cases (target 50+ met, per docs/EVALS.md)
 ├── k8s/                                  # not added yet
 ├── frontend/                             # Next.js dashboard — not added yet
 └── src/

@@ -1,0 +1,7 @@
+{
+  "id": "other-002",
+  "ticket": "Do you have an API rate limit, and is there documentation describing your uptime SLA?",
+  "expectedCategory": "OTHER",
+  "expectedRouting": null,
+  "mustCite": []
+}

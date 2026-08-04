@@ -1,0 +1,7 @@
+{
+  "id": "billing-020",
+  "ticket": "The subscription payment failed twice already and the account is marked past due. Please confirm whether the failed payment retries continue automatically.",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-failed-payment"]
+}

@@ -1,0 +1,7 @@
+{
+  "id": "billing-015",
+  "ticket": "Several payment attempts on my subscription have failed and the account is now past due — will these failed payments retry automatically?",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-failed-payment"]
+}

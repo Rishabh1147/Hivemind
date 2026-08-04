@@ -1,0 +1,7 @@
+{
+  "id": "billing-012",
+  "ticket": "There appears to be a duplicate charge on my account this billing cycle — can someone check the transaction log before issuing a refund?",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-duplicate-charge"]
+}

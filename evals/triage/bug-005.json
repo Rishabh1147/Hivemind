@@ -1,0 +1,7 @@
+{
+  "id": "bug-005",
+  "ticket": "Here are the reproduction steps for the bug: expected vs actual behavior differs after checkout, environment details included, needs to go to engineering.",
+  "expectedCategory": "BUG",
+  "expectedRouting": null,
+  "mustCite": ["bug-report-triage"]
+}

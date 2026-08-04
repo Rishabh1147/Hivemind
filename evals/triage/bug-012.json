@@ -1,0 +1,7 @@
+{
+  "id": "bug-012",
+  "ticket": "This is a bug report: reproduction steps included, environment details attached, and the expected vs actual behavior mismatch is described for engineering.",
+  "expectedCategory": "BUG",
+  "expectedRouting": null,
+  "mustCite": ["bug-report-triage"]
+}

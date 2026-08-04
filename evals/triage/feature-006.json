@@ -1,0 +1,7 @@
+{
+  "id": "feature-006",
+  "ticket": "Would like to file a feature request. I understand feature requests are reviewed monthly by product and customers are notified once scheduled or declined.",
+  "expectedCategory": "FEATURE_REQUEST",
+  "expectedRouting": null,
+  "mustCite": ["feature-request-process"]
+}

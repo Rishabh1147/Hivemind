@@ -1,0 +1,7 @@
+{
+  "id": "billing-019",
+  "ticket": "My card was declined and the payment failed, so my subscription is now past due. Will this failed payment be retried, or do I need to act now?",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-failed-payment"]
+}

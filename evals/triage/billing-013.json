@@ -1,0 +1,7 @@
+{
+  "id": "billing-013",
+  "ticket": "My subscription payment keeps failing and the account now shows past due. Are failed payments retried automatically, or do I need to update my card manually?",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-failed-payment"]
+}

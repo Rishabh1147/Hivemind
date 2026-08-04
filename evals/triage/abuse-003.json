@@ -1,0 +1,7 @@
+{
+  "id": "abuse-003",
+  "ticket": "We detected repeated credential stuffing attempts from this account. Per the abuse and spam policy, it should be suspended immediately pending review.",
+  "expectedCategory": "ABUSE",
+  "expectedRouting": "ESCALATE",
+  "mustCite": ["abuse-policy"]
+}

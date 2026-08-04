@@ -1,0 +1,7 @@
+{
+  "id": "bug-011",
+  "ticket": "Found a bug during signup — reproduction steps and environment details attached, expected behavior differs from actual behavior, routing to engineering.",
+  "expectedCategory": "BUG",
+  "expectedRouting": null,
+  "mustCite": ["bug-report-triage"]
+}

@@ -1,0 +1,7 @@
+{
+  "id": "abuse-005",
+  "ticket": "This account appears to be attempting credential stuffing against other users' logins, which per policy means immediate suspension pending review.",
+  "expectedCategory": "ABUSE",
+  "expectedRouting": "ESCALATE",
+  "mustCite": ["abuse-policy"]
+}

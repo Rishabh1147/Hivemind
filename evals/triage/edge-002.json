@@ -1,0 +1,7 @@
+{
+  "id": "edge-002",
+  "ticket": "Se me cobro dos veces en el mismo ciclo de facturacion (I was charged twice in the same billing cycle) — please check the transaction log for a duplicate charge and issue a refund.",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-duplicate-charge"]
+}

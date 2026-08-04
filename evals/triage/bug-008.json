@@ -1,0 +1,7 @@
+{
+  "id": "bug-008",
+  "ticket": "Bug found in the dashboard — reproduction steps below, expected behavior vs actual behavior differs, environment details included for the engineering team.",
+  "expectedCategory": "BUG",
+  "expectedRouting": null,
+  "mustCite": ["bug-report-triage"]
+}

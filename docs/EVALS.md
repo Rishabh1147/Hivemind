@@ -1,13 +1,17 @@
 # Evaluation
 
-*Implementation status (as of 2026-07-30, session 10): the harness described below is real —
+*Implementation status (as of 2026-08-03, session 13): the harness described below is real —
 `verticals/triage/eval/`, runnable via `./mvnw spring-boot:run -Dspring-boot.run.profiles=eval`
 (this doc's original placeholder below said `./gradlew`, which was never accurate — this project
-has always been Maven). 10 of the 50+ target cases exist. Category accuracy, routing correctness,
-and citation recall are scored and gated; tone (needs a live LLM-as-judge call) and cost-per-ticket
-(needs the not-yet-built `CostTracker`) are designed below but not yet gated. See the
-2026-07-30-session10 devlog for the full "what's real vs. still aspirational" account and the
-reasoning behind each deviation from this original design.*
+has always been Maven). The 50+ case target is now met: 53 cases across
+`evals/triage/`, matching the distribution below almost exactly (20 billing, 15 bug, 8 feature, 5
+abuse, 3 edge-case, 2 other), validated on every `mvn test` run by `EvalCaseSetTest` (unique ids,
+every `mustCite` entry resolves to a real `KnowledgeBase` chunk, no blank tickets) — separate from
+actually running the harness against a live model, which none of this requires. Category accuracy,
+routing correctness, and citation recall are scored and gated; tone (needs a live LLM-as-judge call)
+and cost-per-ticket (needs the not-yet-built `CostTracker`) are designed below but not yet gated. See
+the 2026-08-01-session12 devlog for the "what's real vs. still aspirational" account of tracing/CI,
+and 2026-08-03-session13 for the eval-set expansion.*
 
 ## Why eval-first
 
@@ -15,12 +19,13 @@ Most LLM projects fail not at the demo, but at the second iteration —
 "I changed the prompt and now something else broke." Evals catch that
 regression before it ships.
 
-Hivemind treats evals as a first-class artifact: every PR runs the suite,
-and a regression below threshold blocks merge.
+Hivemind treats evals as a first-class artifact: the goal is every PR running the suite, with a
+regression below threshold blocking merge. GitHub Actions CI exists (session 11) but currently gates
+on the test suite only, not the eval harness — see the implementation-status note above for why.
 
 ## Test set
 
-- **Size**: target 50+ cases for TriageBot v1 (current: 10, hand-written)
+- **Size**: target 50+ cases for TriageBot v1 (current: 53, hand-written)
 - **Sources**: hand-written + synthesized + adversarial
 - **Distribution** (TriageBot vertical):
   - 40% billing

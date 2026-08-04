@@ -1,0 +1,7 @@
+{
+  "id": "abuse-004",
+  "ticket": "Multiple reports of unsolicited bulk messages and credential stuffing coming from this account — please suspend it immediately pending review.",
+  "expectedCategory": "ABUSE",
+  "expectedRouting": "ESCALATE",
+  "mustCite": ["abuse-policy"]
+}
