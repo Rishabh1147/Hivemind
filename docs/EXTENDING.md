@@ -73,9 +73,10 @@ Eval case (`evals/codescout/null-deref-001.json`):
 - **Memory layer** — short-term Redis, long-term pgvector. ❌ not built — neither exists; the only
   persistent memory today is the Postgres audit log and the current-ticket-state table.
 - **OpenTelemetry instrumentation** — traces and metrics emitted with
-  `vertical` attribute pre-set. ⚠️ partial — HTTP and Kafka spans are real (session 12); a
-  per-vertical attribute isn't pre-set on them today, and there are no LLM-call or tool-call spans
-  yet, so this would need real work to hold for a second vertical, not just configuration.
+  `vertical` attribute pre-set. ⚠️ partial — HTTP, Kafka, and (as of 2026-08-06) LLM-call spans are
+  real; tool-call spans aren't. A per-vertical attribute isn't pre-set on any of them today — nothing
+  in `LlmClient` or `ToolInvoker` currently knows which vertical is calling — so this would still need
+  real work to hold for a second vertical, not just configuration.
 - **Eval harness** — same scoring framework, just add cases. ✅ real for the framework
   (`TriageEvalScorer` is pure logic with no triage-specific assumptions in its scoring rules), though
   `TriageEvalRunner`/`TriageEvalCase` are currently named and wired triage-specifically

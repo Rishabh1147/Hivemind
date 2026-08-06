@@ -32,6 +32,9 @@ logs/
 # Eval results
 eval-results/
 
+# Personal prep doc — not for git, README.md/docs/ARCHITECTURE.md are the tracked equivalents
+OVERVIEW.md
+
 # Frontend (will be added later)
 node_modules/
 .next/

@@ -85,10 +85,12 @@ alongside everything the earlier stages produced.
 
 **Q: Why wrap LangChain4j's `ChatModel` in your own `LlmClient` instead of injecting it directly
 into agents?**
-Every vertical talks to Claude through one indirection point. That's where cost tracking
-(tokens → USD, per the `CostTracker` in the roadmap) and OpenTelemetry LLM spans get added later —
-once, not per-agent. It also means swapping providers or adding retry/fallback logic never touches
-agent code.
+Every vertical talks to Claude through one indirection point. That's exactly where cost tracking and
+the LLM tracing span ended up living: `LlmClient.complete()` calls `CostTracker` once and opens one
+`llm.complete` span per logical call (tagged `llm.model`, `llm.latency_ms`, and — on success —
+`llm.input_tokens`/`llm.output_tokens`/`llm.cost_usd`), so neither `ClassifierAgent` nor
+`ResponderAgent` needs to know `CostTracker` or `Tracer` exist at all. It also means swapping
+providers or adding retry/fallback logic never touches agent code.
 
 **Q: Why not use the raw Anthropic Java SDK instead of LangChain4j?**
 LangChain4j gives structured chat message types (`SystemMessage`/`UserMessage`), a provider-agnostic

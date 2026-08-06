@@ -66,8 +66,8 @@ every design choice.
 | Messaging | **Apache Kafka** (KRaft) | ✅ durable event bus between all four agents |
 | Persistence | **PostgreSQL 16 + Flyway** | ✅ ticket state + immutable audit log (`JdbcTemplate`, not JPA) |
 | Testing | **Testcontainers** | ✅ real Postgres + Kafka per integration test, no mocks |
-| Observability | **Micrometer Tracing + OpenTelemetry** | ✅ one trace id across the HTTP request + every Kafka hop, exported as log lines — no LLM/tool call spans yet, no Prometheus/Grafana |
-| Cost tracking | **`CostTracker`** | ✅ real per-call USD from token counts; pricing rates are placeholders, not verified published prices |
+| Observability | **Micrometer Tracing + OpenTelemetry** | ✅ one trace id across the HTTP request, every Kafka hop, and every LLM call, exported as log lines — no tool-call spans yet, no Prometheus/Grafana |
+| Cost tracking | **`CostTracker`** | ✅ real per-call USD from token counts, tagged onto the LLM span as `llm.cost_usd`; pricing rates are placeholders, not verified published prices |
 | CI | **GitHub Actions** | ✅ full test suite on every push/PR — not yet gating on the eval harness itself (cost/secrets tradeoff) |
 | Vector DB | pgvector | ❌ planned — knowledge base is 5 hardcoded chunks today |
 | Cache | Redis | ❌ planned |
@@ -125,8 +125,8 @@ today" above for what's real right now.
         │
    ┌────▼─────────────────────────────────────────────┐
    │ Shared infra: Postgres (real) + pgvector (planned),
-   │ Redis (planned), OpenTelemetry (partial — HTTP/Kafka
-   │ spans real, LLM/tool spans planned), eval harness (real)
+   │ Redis (planned), OpenTelemetry (partial — HTTP/Kafka/LLM
+   │ spans real, tool spans planned), eval harness (real)
    └──────────────────────────────────────────────────┘
 ```
 
@@ -145,7 +145,8 @@ for the package layout, file by file, built vs. planned.
 - [x] Tool registry + first real tool (`searchKb`), timeout/retry/virtual-thread sandboxing
 - [x] Eval harness — 53 cases (50+ target met), gated on category accuracy / citation recall / p95 latency / cost-per-ticket
 - [x] GitHub Actions CI — full test suite on every push/PR
-- [x] Distributed tracing — one trace id across the HTTP request and every Kafka hop
+- [x] Distributed tracing — one trace id across the HTTP request, every Kafka hop, and every LLM call
+      (`llm.model`/`llm.cost_usd`/token-count span tags)
 - [ ] CI gating on the eval harness itself (currently tests only)
 - [ ] Tone scoring (LLM-as-judge) — the one eval threshold still ungated
 - [ ] A dynamic planner that decides the pipeline instead of four hardcoded Kafka hops

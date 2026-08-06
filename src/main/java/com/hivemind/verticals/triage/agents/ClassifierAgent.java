@@ -6,7 +6,6 @@ import com.hivemind.platform.agent.AgentContext;
 import com.hivemind.platform.agent.AgentResult;
 import com.hivemind.platform.agent.AgentRole;
 import com.hivemind.platform.agent.BaseAgent;
-import com.hivemind.platform.llm.CostTracker;
 import com.hivemind.platform.llm.LlmClient;
 import com.hivemind.platform.llm.LlmResponse;
 import com.hivemind.verticals.triage.model.Category;
@@ -22,12 +21,10 @@ public class ClassifierAgent extends BaseAgent<Classification> {
             {"category": "<ONE_OF_THE_ABOVE>", "confidence": <number between 0 and 1>}""";
 
     private final LlmClient llmClient;
-    private final CostTracker costTracker;
     private final ObjectMapper objectMapper;
 
-    public ClassifierAgent(LlmClient llmClient, CostTracker costTracker, ObjectMapper objectMapper) {
+    public ClassifierAgent(LlmClient llmClient, ObjectMapper objectMapper) {
         this.llmClient = llmClient;
-        this.costTracker = costTracker;
         this.objectMapper = objectMapper;
     }
 
@@ -44,8 +41,7 @@ public class ClassifierAgent extends BaseAgent<Classification> {
             JsonNode node = objectMapper.readTree(response.text());
             Category category = Category.valueOf(node.get("category").asText());
             double confidence = node.get("confidence").asDouble();
-            double costUsd = costTracker.costUsd(response.tokenUsage());
-            return AgentResult.success(new Classification(category, confidence), costUsd);
+            return AgentResult.success(new Classification(category, confidence), response.costUsd());
         } catch (Exception e) {
             return AgentResult.failure("Failed to parse classifier response: " + e.getMessage());
         }

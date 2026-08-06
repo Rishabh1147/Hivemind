@@ -3,6 +3,7 @@ package com.hivemind.platform.llm;
 import dev.langchain4j.exception.AuthenticationException;
 import dev.langchain4j.exception.RateLimitException;
 import dev.langchain4j.model.output.TokenUsage;
+import io.micrometer.tracing.Tracer;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedList;
@@ -15,17 +16,20 @@ class LlmClientTest {
 
     // 1ms base backoff keeps retry tests fast; jitter is bounded by this value.
     private static final long TEST_BACKOFF_MS = 1;
+    private static final CostTracker TEST_COST_TRACKER = new CostTracker(3.00, 15.00);
 
     /**
      * Overrides the actual provider call so the retry policy in {@link LlmClient#complete} can be
      * exercised without mocking LangChain4j's {@code ChatModel}/{@code ChatResponse} types.
+     * {@link Tracer#NOOP} is a real no-op implementation (not a mock), the same choice this class
+     * would make with no tracing backend configured.
      */
     private static class ScriptedLlmClient extends LlmClient {
         private final Queue<Object> script = new LinkedList<>();
         private int callCount = 0;
 
         ScriptedLlmClient(int maxAttempts) {
-            super(null, maxAttempts, TEST_BACKOFF_MS);
+            super(null, TEST_COST_TRACKER, Tracer.NOOP, "claude-sonnet-5", maxAttempts, TEST_BACKOFF_MS);
         }
 
         void willThrow(RuntimeException e) {
@@ -33,7 +37,9 @@ class LlmClientTest {
         }
 
         void willReturn(String text) {
-            script.add(new LlmResponse(text, new TokenUsage(10, 20)));
+            // costUsd is a placeholder here — LlmClient.complete() recomputes and overwrites it via
+            // CostTracker before returning, same as the real doChat() path.
+            script.add(new LlmResponse(text, new TokenUsage(10, 20), 0.0));
         }
 
         int callCount() {
@@ -61,6 +67,8 @@ class LlmClientTest {
         assertThat(result.text()).isEqualTo("hello");
         assertThat(result.tokenUsage().inputTokenCount()).isEqualTo(10);
         assertThat(client.callCount()).isEqualTo(1);
+        // 10 input tokens @ $3/M + 20 output tokens @ $15/M = 0.00003 + 0.0003
+        assertThat(result.costUsd()).isEqualTo(0.00033);
     }
 
     @Test

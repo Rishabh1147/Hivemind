@@ -3,7 +3,6 @@ package com.hivemind.verticals.triage.agents;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hivemind.platform.agent.AgentContext;
 import com.hivemind.platform.agent.AgentResult;
-import com.hivemind.platform.llm.CostTracker;
 import com.hivemind.platform.llm.LlmClient;
 import com.hivemind.platform.llm.LlmResponse;
 import com.hivemind.verticals.triage.kb.KbChunk;
@@ -21,16 +20,18 @@ import static org.mockito.Mockito.when;
 class ResponderAgentTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final CostTracker costTracker = new CostTracker(3.00, 15.00);
 
     @Test
     void draftsAnswerWithCitationsFromWellFormedResponse() {
         LlmClient llmClient = mock(LlmClient.class);
+        // 200 input tokens @ $3/M + 40 output tokens @ $15/M = 0.0006 + 0.0006; LlmClient computes
+        // this via CostTracker before returning, so the mock returns the number it would have handed
+        // back rather than re-deriving it here.
         when(llmClient.complete(any(), any())).thenReturn(new LlmResponse(
                 "{\"answer\": \"We found a duplicate charge and issued a refund.\", "
                         + "\"citedChunkIds\": [\"billing-duplicate-charge\"]}",
-                new TokenUsage(200, 40)));
-        ResponderAgent agent = new ResponderAgent(llmClient, costTracker, objectMapper);
+                new TokenUsage(200, 40), 0.0012));
+        ResponderAgent agent = new ResponderAgent(llmClient, objectMapper);
 
         AgentContext context = new AgentContext("ticket-1");
         context.put(TriageContextKeys.TICKET_BODY, "I was charged twice");
@@ -42,7 +43,6 @@ class ResponderAgentTest {
         assertThat(result.success()).isTrue();
         assertThat(result.payload().answer()).contains("refund");
         assertThat(result.payload().citedChunkIds()).containsExactly("billing-duplicate-charge");
-        // 200 input tokens @ $3/M + 40 output tokens @ $15/M = 0.0006 + 0.0006
         assertThat(result.costUsd()).isEqualTo(0.0012);
     }
 
@@ -52,8 +52,8 @@ class ResponderAgentTest {
         when(llmClient.complete(any(), any())).thenReturn(new LlmResponse(
                 "{\"answer\": \"We don't have specific policy on this yet, escalating to a human.\", "
                         + "\"citedChunkIds\": []}",
-                new TokenUsage(150, 30)));
-        ResponderAgent agent = new ResponderAgent(llmClient, costTracker, objectMapper);
+                new TokenUsage(150, 30), 0.00075));
+        ResponderAgent agent = new ResponderAgent(llmClient, objectMapper);
 
         AgentContext context = new AgentContext("ticket-2");
         context.put(TriageContextKeys.TICKET_BODY, "Something unusual");
@@ -69,7 +69,7 @@ class ResponderAgentTest {
     void failsGracefullyWhenLlmCallThrows() {
         LlmClient llmClient = mock(LlmClient.class);
         when(llmClient.complete(any(), any())).thenThrow(new RuntimeException("invalid x-api-key"));
-        ResponderAgent agent = new ResponderAgent(llmClient, costTracker, objectMapper);
+        ResponderAgent agent = new ResponderAgent(llmClient, objectMapper);
 
         AgentContext context = new AgentContext("ticket-3");
         context.put(TriageContextKeys.TICKET_BODY, "some ticket body");
@@ -85,8 +85,8 @@ class ResponderAgentTest {
     @Test
     void failsGracefullyOnMalformedResponse() {
         LlmClient llmClient = mock(LlmClient.class);
-        when(llmClient.complete(any(), any())).thenReturn(new LlmResponse("not json", new TokenUsage(5, 0)));
-        ResponderAgent agent = new ResponderAgent(llmClient, costTracker, objectMapper);
+        when(llmClient.complete(any(), any())).thenReturn(new LlmResponse("not json", new TokenUsage(5, 0), 0.0));
+        ResponderAgent agent = new ResponderAgent(llmClient, objectMapper);
 
         AgentContext context = new AgentContext("ticket-4");
         context.put(TriageContextKeys.TICKET_BODY, "some ticket body");

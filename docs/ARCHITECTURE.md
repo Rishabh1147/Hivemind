@@ -102,15 +102,20 @@ stateless beyond what's in the Kafka event and the `tickets` row itself.*
 
 ## Observability
 
-*Implementation status (as of 2026-08-05): HTTP spans and Kafka producer/consumer spans are real —
-Micrometer Tracing + the OpenTelemetry bridge, wired through `EventBus`/`EventConsumer` so trace
-context propagates via Kafka headers across every stage. LLM spans (with the token/cost attributes
-below) and tool spans are not instrumented as spans yet — though the cost half of that data is now
-computed for real elsewhere: `CostTracker` turns each Claude call's `TokenUsage` into a USD figure,
-used today to gate the eval harness's cost-per-ticket threshold, just not yet attached to a span as
-`llm.cost_usd`. Exporting is a `LoggingSpanExporter` (spans as log lines) — real and verified, but not
-Prometheus/Grafana; see the 2026-08-01 devlog for the "why the logging exporter for now" reasoning
-and how propagation was verified against real infrastructure, and 2026-08-05 for `CostTracker`.*
+*Implementation status (as of 2026-08-06): HTTP spans, Kafka producer/consumer spans, and LLM spans
+are all real. `LlmClient.complete()` opens one `llm.complete` span per logical call (covering every
+retry attempt underneath it, not one span per attempt) and tags `llm.model` and `llm.latency_ms`
+always, plus `llm.input_tokens`/`llm.output_tokens`/`llm.cost_usd` when the call actually succeeds
+(nothing to report on a failed call — verified by triggering the real failure path against a dummy
+key: the span comes through with only `llm.model`/`llm.latency_ms` set, `llm.cost_usd` correctly
+absent). `llm.cost_usd` reuses `CostTracker` — moved from being called separately by each agent to
+being called once inside `LlmClient` itself, so token-to-dollar conversion and span tagging both read
+from the same number. Not yet tagged: `llm.vertical` (no vertical concept is plumbed into `LlmClient`
+today — nothing downstream needs it with only one vertical calling in) and tool spans (`ToolInvoker`
+isn't instrumented at all). Exporting is a `LoggingSpanExporter` (spans as log lines) — real and
+verified, but not Prometheus/Grafana; see the 2026-08-01 devlog for the "why the logging exporter for
+now" reasoning, 2026-08-05 for `CostTracker`'s original build, and 2026-08-06 for wiring the two
+together.*
 
 OpenTelemetry instruments:
 

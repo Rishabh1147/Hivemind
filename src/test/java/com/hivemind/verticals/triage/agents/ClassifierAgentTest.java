@@ -3,7 +3,6 @@ package com.hivemind.verticals.triage.agents;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hivemind.platform.agent.AgentContext;
 import com.hivemind.platform.agent.AgentResult;
-import com.hivemind.platform.llm.CostTracker;
 import com.hivemind.platform.llm.LlmClient;
 import com.hivemind.platform.llm.LlmResponse;
 import com.hivemind.verticals.triage.model.Category;
@@ -19,14 +18,16 @@ import static org.mockito.Mockito.when;
 class ClassifierAgentTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final CostTracker costTracker = new CostTracker(3.00, 15.00);
 
     @Test
     void parsesWellFormedClassifierResponseAndReportsRealCost() {
         LlmClient llmClient = mock(LlmClient.class);
+        // 100 input tokens @ $3/M + 20 output tokens @ $15/M = 0.0003 + 0.0003; LlmClient computes
+        // this via CostTracker before returning, so the mock returns the number it would have handed
+        // back rather than re-deriving it here.
         when(llmClient.complete(any(), any())).thenReturn(
-                new LlmResponse("{\"category\": \"BILLING\", \"confidence\": 0.92}", new TokenUsage(100, 20)));
-        ClassifierAgent agent = new ClassifierAgent(llmClient, costTracker, objectMapper);
+                new LlmResponse("{\"category\": \"BILLING\", \"confidence\": 0.92}", new TokenUsage(100, 20), 0.0006));
+        ClassifierAgent agent = new ClassifierAgent(llmClient, objectMapper);
 
         AgentContext context = new AgentContext("ticket-1");
         context.put(TriageContextKeys.TICKET_BODY, "I was charged twice for my subscription");
@@ -36,7 +37,6 @@ class ClassifierAgentTest {
         assertThat(result.success()).isTrue();
         assertThat(result.payload().category()).isEqualTo(Category.BILLING);
         assertThat(result.payload().confidence()).isEqualTo(0.92);
-        // 100 input tokens @ $3/M + 20 output tokens @ $15/M = 0.0003 + 0.0003
         assertThat(result.costUsd()).isEqualTo(0.0006);
     }
 
@@ -44,7 +44,7 @@ class ClassifierAgentTest {
     void failsGracefullyWhenLlmCallThrows() {
         LlmClient llmClient = mock(LlmClient.class);
         when(llmClient.complete(any(), any())).thenThrow(new RuntimeException("invalid x-api-key"));
-        ClassifierAgent agent = new ClassifierAgent(llmClient, costTracker, objectMapper);
+        ClassifierAgent agent = new ClassifierAgent(llmClient, objectMapper);
 
         AgentContext context = new AgentContext("ticket-3");
         context.put(TriageContextKeys.TICKET_BODY, "some ticket body");
@@ -59,8 +59,8 @@ class ClassifierAgentTest {
     @Test
     void failsGracefullyOnMalformedResponse() {
         LlmClient llmClient = mock(LlmClient.class);
-        when(llmClient.complete(any(), any())).thenReturn(new LlmResponse("not json", new TokenUsage(5, 0)));
-        ClassifierAgent agent = new ClassifierAgent(llmClient, costTracker, objectMapper);
+        when(llmClient.complete(any(), any())).thenReturn(new LlmResponse("not json", new TokenUsage(5, 0), 0.0));
+        ClassifierAgent agent = new ClassifierAgent(llmClient, objectMapper);
 
         AgentContext context = new AgentContext("ticket-2");
         context.put(TriageContextKeys.TICKET_BODY, "some ticket body");
