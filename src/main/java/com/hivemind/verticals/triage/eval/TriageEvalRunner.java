@@ -96,7 +96,7 @@ public class TriageEvalRunner {
             classifyContext.put(TriageContextKeys.TICKET_BODY, evalCase.ticket());
             AgentResult<Classification> classifyResult = classifierAgent.handle(classifyContext);
             if (!classifyResult.success()) {
-                return errorResult(evalCase, start, "classify: " + classifyResult.errorMessage());
+                return errorResult(evalCase, start, classifyResult.costUsd(), "classify: " + classifyResult.errorMessage());
             }
             Category actualCategory = classifyResult.payload().category();
 
@@ -109,8 +109,9 @@ public class TriageEvalRunner {
             respondContext.put(TriageContextKeys.TICKET_BODY, evalCase.ticket());
             respondContext.put(TriageContextKeys.RETRIEVED_CHUNKS, chunks);
             AgentResult<DraftResponse> respondResult = responderAgent.handle(respondContext);
+            double costUsdSoFar = classifyResult.costUsd() + respondResult.costUsd();
             if (!respondResult.success()) {
-                return errorResult(evalCase, start, "respond: " + respondResult.errorMessage());
+                return errorResult(evalCase, start, costUsdSoFar, "respond: " + respondResult.errorMessage());
             }
             List<String> citedChunkIds = respondResult.payload().citedChunkIds();
 
@@ -122,14 +123,16 @@ public class TriageEvalRunner {
             AgentResult<RoutingDecision> routeResult = routingAgent.handle(routeContext);
             RoutingDecision actualRouting = routeResult.success() ? routeResult.payload() : null;
 
-            return TriageEvalScorer.score(evalCase, actualCategory, actualRouting, citedChunkIds, elapsedMs(start));
+            return TriageEvalScorer.score(
+                    evalCase, actualCategory, actualRouting, citedChunkIds, elapsedMs(start), costUsdSoFar);
         } catch (Exception e) {
-            return errorResult(evalCase, start, e.getMessage());
+            return errorResult(evalCase, start, 0.0, e.getMessage());
         }
     }
 
-    private TriageEvalResult errorResult(TriageEvalCase evalCase, long start, String error) {
-        return new TriageEvalResult(evalCase.id(), false, false, false, null, null, List.of(), elapsedMs(start), error);
+    private TriageEvalResult errorResult(TriageEvalCase evalCase, long start, double costUsd, String error) {
+        return new TriageEvalResult(
+                evalCase.id(), false, false, false, null, null, List.of(), elapsedMs(start), costUsd, error);
     }
 
     private long elapsedMs(long startNanos) {
@@ -142,6 +145,7 @@ public class TriageEvalRunner {
         double categoryAccuracy = rate(results, TriageEvalResult::categoryCorrect);
         double routingAccuracy = rate(results, TriageEvalResult::routingCorrect);
         double citationRecall = rate(results, TriageEvalResult::citationRecallMet);
+        double avgCostUsd = results.stream().mapToDouble(TriageEvalResult::costUsd).average().orElse(0.0);
 
         List<Long> sortedLatencies = results.stream()
                 .map(TriageEvalResult::latencyMs)
@@ -157,6 +161,7 @@ public class TriageEvalRunner {
                 citationRecall,
                 percentile(sortedLatencies, 0.50),
                 percentile(sortedLatencies, 0.95),
+                avgCostUsd,
                 results);
     }
 

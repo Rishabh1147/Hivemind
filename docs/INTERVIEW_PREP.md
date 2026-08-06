@@ -25,21 +25,23 @@ a single-process graph library.
 
 **Q: What's actually built vs. what's still just documented/planned?**
 Be precise here — this is a portfolio project and overclaiming is the fastest way to lose
-credibility in an interview. As of the last devlog (2026-08-03, session 13): four agents
-(`ClassifierAgent`, `RetrieverAgent`, `ResponderAgent`, `RoutingAgent`) genuinely chained through
-Kafka — classify → retrieve → respond → route — with `GET /tickets/{id}` reaching a final routing
-decision, both ticket state and the full event history persisted in real Postgres (`TicketRepository`,
-`AuditLog`), and an eval harness (`verticals/triage/eval/`) that runs 53 hand-written cases (the
-50+ target, hit session 13) and gates on category accuracy / citation recall / p95 latency with a
-real process exit code. GitHub Actions CI (session 11) runs the 39-test suite on every push/PR.
-Distributed tracing (session 12) follows one trace id across the HTTP request and every Kafka hop,
-exported as log lines. The full `ARCHITECTURE.md` pipeline is real except the `Stream` step (SSE to
-a dashboard that doesn't exist). Still not built: a planner that *decides* the chain dynamically
-(it's four hardcoded consumer→topic links, not planner-routed), pgvector-backed KB persistence
-(`KnowledgeBase` is still 5 hardcoded chunks), the eval harness's tone scoring and cost gating, CI
-gating on the eval harness itself (cost/secrets tradeoff, deliberate), a real OTLP tracing backend
-(currently just a logging exporter), frontend. Check `docs/devlog/` for the current honest state
-before claiming anything more specific.
+credibility in an interview. As of 2026-08-05: four agents (`ClassifierAgent`, `RetrieverAgent`,
+`ResponderAgent`, `RoutingAgent`) genuinely chained through Kafka — classify → retrieve → respond →
+route — with `GET /tickets/{id}` reaching a final routing decision, both ticket state and the full
+event history persisted in real Postgres (`TicketRepository`, `AuditLog`), and an eval harness
+(`verticals/triage/eval/`) that runs 53 hand-written cases (the 50+ target, hit session 13) and
+gates on category accuracy / citation recall / p95 latency / cost-per-ticket (session 14, real
+`TokenUsage`-derived cost via `CostTracker`) with a real process exit code. GitHub Actions CI
+(session 11) runs the 43-test suite on every push/PR. Distributed tracing (session 12) follows one
+trace id across the HTTP request and every Kafka hop, exported as log lines. The full
+`ARCHITECTURE.md` pipeline is real except the `Stream` step (SSE to a dashboard that doesn't exist).
+Still not built: a planner that *decides* the chain dynamically (it's four hardcoded consumer→topic
+links, not planner-routed), pgvector-backed KB persistence (`KnowledgeBase` is still 5 hardcoded
+chunks), the eval harness's tone scoring (the one threshold still ungated — needs a live LLM-as-judge
+call), CI gating on the eval harness itself (cost/secrets tradeoff, deliberate), a real OTLP tracing
+backend (currently just a logging exporter), `CostTracker`'s pricing rates being real verified
+numbers rather than placeholders, frontend. Check `docs/devlog/` for the current honest state before
+claiming anything more specific.
 
 ## LLM / agent orchestration
 
@@ -173,6 +175,41 @@ already come and gone. Fixed by reading the intermediate `TicketRetrieved` event
 intermediate one it might miss. The lesson: polling for an exact intermediate state in a fast,
 multi-stage async pipeline is inherently racy — poll for "no longer earlier than X" or for the
 terminal state, not for a state that might not still be current by the time you observe it.
+
+**Q: `LlmClient.complete()` used to return a plain `String`. Why change its signature instead of
+tracking cost some other way that wouldn't touch agent code?**
+Because the number has to end up as real *data* the eval harness can aggregate and gate on
+(`TriageEvalReport.avgCostUsd()`), not just a log line — and the only two places that see an
+individual LLM call's result are `LlmClient` itself and the agent that called it. `LlmClient.complete()`
+now returns `LlmResponse` (the text plus LangChain4j's `TokenUsage`, straight off
+`ChatResponse.tokenUsage()`) instead of a bare `String`. `ClassifierAgent` and `ResponderAgent` — the
+only two agents that call an LLM at all — each unpack `.text()` same as before and additionally pass
+`.tokenUsage()` through `CostTracker` to get a dollar figure, which now rides along on a new
+`AgentResult.success(payload, costUsd)` overload. `LlmClient`'s own Javadoc originally said cost
+tracking could be "added here once without touching agent code" — that turned out to be slightly
+optimistic once cost needed to be real, aggregable, gate-able data rather than just something logged;
+worth noticing when an earlier comment's stated intent doesn't survive contact with an actual
+requirement, and updating the comment rather than leaving it quietly wrong.
+
+**Q: Why didn't `RetrieverAgent` and `RoutingAgent` need any changes when `AgentResult` gained a
+`costUsd` field?**
+Because the two new factory methods are additive, not a breaking redesign: `AgentResult.success(payload)`
+(no cost argument) and `AgentResult.failure(errorMessage)` both still exist and now just default
+`costUsd` to `0.0` — accurate, since neither of those two agents ever calls an LLM. Only
+`ClassifierAgent`/`ResponderAgent` needed to switch to the new `success(payload, costUsd)` overload.
+This is the same "extend additively, don't force every call site to change" instinct that shows up
+elsewhere in this codebase (e.g. `TriageResponse`'s `with*` methods) — a shared record gaining a new
+concern doesn't have to mean every existing caller needs to understand that concern.
+
+**Q: `hivemind.llm.pricing.input-cost-per-million-tokens` is set to `3.00` — is that Claude's real
+price?**
+No, and saying it is would be the wrong answer. It's an explicitly-labeled placeholder — commented as
+such in `application.yml` and in `CostTracker`'s Javadoc — because there's no verified, current
+published rate for `hivemind.llm.model` to point at with confidence. The honest framing: the
+*mechanism* is real (real token counts, extracted correctly, turned into a real formula, gating a
+real CI-usable threshold) and that's what's actually being demonstrated; the specific dollar-per-token
+rate is a config value anyone operating this for real would replace with the actual published price
+in about one minute, not a hardcoded assumption baked into the logic.
 
 ## Kafka / eventing
 
@@ -584,6 +621,20 @@ gating, and the process exits `1`. That's precisely what should happen to a brok
 precisely the behavior a real CI gate depends on. A harness that can't be shown to fail correctly
 isn't trustworthy even if it might pass correctly; this is the same reasoning behind checking
 `ToolInvoker`'s and `LlmClient`'s failure paths as carefully as their success paths.
+
+**Q: Cost-per-ticket gating (session 14) shipped with a dummy Anthropic key too — doesn't that mean
+it's never actually been tested with a real cost figure?**
+Correct, and worth saying plainly rather than glossing over: `avgCostUsd` came back `0.0` in every
+verification run so far, because `AgentResult.failure(...)` always carries `0.0` cost and every case
+fails at the classify step before any tokens get billed. What *was* verified for real: the app boots
+cleanly with the new `CostTracker` bean and `hivemind.llm.pricing.*` config resolved, the harness
+runs the full 53-case set without error, `avgCostUsd` appears correctly in both the log line and the
+written JSON report, and the gating comparison (`avgCostUsd <= costPerTicketUsdThreshold`) executes
+without throwing. Separately, `CostTrackerTest` and the updated `ClassifierAgentTest`/`ResponderAgentTest`
+verify the actual dollars-from-tokens *math* is correct, using real `TokenUsage` values and asserting
+exact expected costs — so the arithmetic is proven even though a real end-to-end non-zero number
+isn't yet. Two different kinds of confidence, both honestly reported as what they are, neither
+substituting for the other.
 
 ## CI / delivery
 

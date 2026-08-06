@@ -1,17 +1,19 @@
 # Evaluation
 
-*Implementation status (as of 2026-08-03, session 13): the harness described below is real —
+*Implementation status (as of 2026-08-05): the harness described below is real —
 `verticals/triage/eval/`, runnable via `./mvnw spring-boot:run -Dspring-boot.run.profiles=eval`
 (this doc's original placeholder below said `./gradlew`, which was never accurate — this project
-has always been Maven). The 50+ case target is now met: 53 cases across
+has always been Maven). The 50+ case target is met: 53 cases across
 `evals/triage/`, matching the distribution below almost exactly (20 billing, 15 bug, 8 feature, 5
 abuse, 3 edge-case, 2 other), validated on every `mvn test` run by `EvalCaseSetTest` (unique ids,
 every `mustCite` entry resolves to a real `KnowledgeBase` chunk, no blank tickets) — separate from
 actually running the harness against a live model, which none of this requires. Category accuracy,
-routing correctness, and citation recall are scored and gated; tone (needs a live LLM-as-judge call)
-and cost-per-ticket (needs the not-yet-built `CostTracker`) are designed below but not yet gated. See
-the 2026-08-01-session12 devlog for the "what's real vs. still aspirational" account of tracing/CI,
-and 2026-08-03-session13 for the eval-set expansion.*
+routing correctness, citation recall, and (as of 2026-08-05) cost-per-ticket are scored and gated —
+`CostTracker` turns real token counts from every Claude call into a USD figure at a configurable,
+currently-placeholder per-million-token rate (`hivemind.llm.pricing.*`). Tone (needs a live
+LLM-as-judge call no session has had a real Anthropic key to verify against) is still designed below
+but not gated. See `docs/devlog/` for the full "what's real vs. still aspirational" account,
+session by session.*
 
 ## Why eval-first
 
@@ -70,7 +72,7 @@ Each case has expected outputs for:
    precision isn't computed — with a 5-chunk `KnowledgeBase` and top-K retrieval, over-citation
    isn't a failure mode worth a separate metric yet)
 4. **Tone** (LLM-as-judge: 1–5) — ❌ not scored yet; needs a live Anthropic key to verify the judge
-   call against, which this session didn't have
+   call against, which no session has had
 
 Aggregate scores reported per run (`TriageEvalReport`):
 
@@ -78,13 +80,15 @@ Aggregate scores reported per run (`TriageEvalReport`):
   gated)
 - p50/p95 latency (real — measured wall-clock time per case, including real Claude round-trips)
 - Average tone — ❌ not computed
-- Average cost per ticket (USD) — ❌ not computed, needs `CostTracker` (roadmap, not built)
+- **Average cost per ticket (USD)** — ✅ real, via `CostTracker` reading `TokenUsage` off every
+  Claude response (`ChatResponse.tokenUsage()`); 0.0 for a case where the LLM call itself failed
+  before any tokens were billed, since `AgentResult.failure(...)` always carries 0.0 cost
 
 ## CI gating
 
 Thresholds (start lenient, tighten over time), configured in `application.yml`
-(`hivemind.eval.thresholds.*`) since session 1 and finally read by
-`TriageEvalHarnessRunner` as of session 10:
+(`hivemind.eval.thresholds.*`) since session 1, first read by `TriageEvalHarnessRunner` starting
+session 10, all four gateable thresholds finally wired as of 2026-08-05:
 
 | Metric | Threshold | Gated? |
 |---|---|---|
@@ -92,7 +96,7 @@ Thresholds (start lenient, tighten over time), configured in `application.yml`
 | Citation recall | ≥ 0.70 | ✅ |
 | Tone (avg) | ≥ 4.0 | ❌ not yet — no tone scoring |
 | p95 latency | ≤ 8s | ✅ |
-| Cost per ticket | ≤ $0.05 | ❌ not yet — no `CostTracker` |
+| Cost per ticket | ≤ $0.05 | ✅ — `hivemind.llm.pricing.*` rates are placeholders, not verified real pricing for `hivemind.llm.model` |
 
 `TriageEvalHarnessRunner` exits non-zero on any gated threshold failing — verified by running the
 harness with a deliberately invalid Anthropic key (every case fails, `categoryAccuracy = 0.0`, exit

@@ -75,8 +75,9 @@ platform/
 │   ├── LongTermMemory.java               # pgvector — not built
 │   └── AuditLog.java                     ✅ Postgres, immutable append-only. JdbcTemplate-backed; EventBus.publish() writes here alongside every Kafka send
 ├── llm/
-│   ├── LlmClient.java                    ✅ LangChain4j wrapper, retry/backoff, doChat test seam
-│   └── CostTracker.java                  # tokens → USD — not built
+│   ├── LlmClient.java                    ✅ LangChain4j wrapper, retry/backoff, doChat test seam — returns LlmResponse, not String
+│   ├── LlmResponse.java                  ✅ {text, tokenUsage} — what LlmClient.complete() actually returns
+│   └── CostTracker.java                  ✅ tokens → USD at a configurable (placeholder) per-million-token rate
 ├── messaging/
 │   ├── EventBus.java                     ✅ Kafka producer wrapper (JSON via Jackson)
 │   ├── EventConsumer.java                ✅ generic consumer base — deserialize, catch-and-log onEvent; all four triage consumers extend it

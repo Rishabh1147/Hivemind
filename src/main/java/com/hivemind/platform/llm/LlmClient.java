@@ -13,8 +13,9 @@ import org.springframework.stereotype.Component;
 
 /**
  * Vertical-agnostic wrapper around the LangChain4j {@link ChatModel}. Every vertical talks to
- * Claude through this, never directly through LangChain4j types, so cost tracking and
- * observability can be added here once without touching agent code.
+ * Claude through this, never directly through LangChain4j types, so a retry policy — and, as of
+ * session 14, real token-usage numbers for {@link CostTracker} — exist in exactly one place instead
+ * of being re-derived per agent.
  *
  * <p>Retries transient provider failures ({@link RetriableException} — rate limits, 5xx) with
  * exponential backoff and full jitter, up to {@code maxAttempts}. Anything else (auth errors,
@@ -38,7 +39,7 @@ public class LlmClient {
         this.baseBackoffMs = baseBackoffMs;
     }
 
-    public String complete(String systemPrompt, String userMessage) {
+    public LlmResponse complete(String systemPrompt, String userMessage) {
         RetriableException lastFailure = null;
 
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -62,9 +63,9 @@ public class LlmClient {
      * The actual provider call, isolated behind its own method so the retry policy above can be
      * unit-tested (via a subclass override) without needing to mock LangChain4j's response types.
      */
-    protected String doChat(String systemPrompt, String userMessage) {
+    protected LlmResponse doChat(String systemPrompt, String userMessage) {
         ChatResponse response = chatModel.chat(SystemMessage.from(systemPrompt), UserMessage.from(userMessage));
-        return response.aiMessage().text();
+        return new LlmResponse(response.aiMessage().text(), response.tokenUsage());
     }
 
 }

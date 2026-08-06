@@ -2,6 +2,7 @@ package com.hivemind.platform.llm;
 
 import dev.langchain4j.exception.AuthenticationException;
 import dev.langchain4j.exception.RateLimitException;
+import dev.langchain4j.model.output.TokenUsage;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedList;
@@ -32,7 +33,7 @@ class LlmClientTest {
         }
 
         void willReturn(String text) {
-            script.add(text);
+            script.add(new LlmResponse(text, new TokenUsage(10, 20)));
         }
 
         int callCount() {
@@ -40,13 +41,13 @@ class LlmClientTest {
         }
 
         @Override
-        protected String doChat(String systemPrompt, String userMessage) {
+        protected LlmResponse doChat(String systemPrompt, String userMessage) {
             callCount++;
             Object next = script.poll();
             if (next instanceof RuntimeException e) {
                 throw e;
             }
-            return (String) next;
+            return (LlmResponse) next;
         }
     }
 
@@ -55,9 +56,10 @@ class LlmClientTest {
         ScriptedLlmClient client = new ScriptedLlmClient(3);
         client.willReturn("hello");
 
-        String result = client.complete("system", "user");
+        LlmResponse result = client.complete("system", "user");
 
-        assertThat(result).isEqualTo("hello");
+        assertThat(result.text()).isEqualTo("hello");
+        assertThat(result.tokenUsage().inputTokenCount()).isEqualTo(10);
         assertThat(client.callCount()).isEqualTo(1);
     }
 
@@ -68,9 +70,9 @@ class LlmClientTest {
         client.willThrow(new RateLimitException("429"));
         client.willReturn("classified");
 
-        String result = client.complete("system", "user");
+        LlmResponse result = client.complete("system", "user");
 
-        assertThat(result).isEqualTo("classified");
+        assertThat(result.text()).isEqualTo("classified");
         assertThat(client.callCount()).isEqualTo(3);
     }
 

@@ -6,7 +6,9 @@ import com.hivemind.platform.agent.AgentContext;
 import com.hivemind.platform.agent.AgentResult;
 import com.hivemind.platform.agent.AgentRole;
 import com.hivemind.platform.agent.BaseAgent;
+import com.hivemind.platform.llm.CostTracker;
 import com.hivemind.platform.llm.LlmClient;
+import com.hivemind.platform.llm.LlmResponse;
 import com.hivemind.verticals.triage.kb.KbChunk;
 import com.hivemind.verticals.triage.model.DraftResponse;
 
@@ -31,10 +33,12 @@ public class ResponderAgent extends BaseAgent<DraftResponse> {
             {"answer": "<the reply text>", "citedChunkIds": ["<kb chunk id>", ...]}""";
 
     private final LlmClient llmClient;
+    private final CostTracker costTracker;
     private final ObjectMapper objectMapper;
 
-    public ResponderAgent(LlmClient llmClient, ObjectMapper objectMapper) {
+    public ResponderAgent(LlmClient llmClient, CostTracker costTracker, ObjectMapper objectMapper) {
         this.llmClient = llmClient;
+        this.costTracker = costTracker;
         this.objectMapper = objectMapper;
     }
 
@@ -44,18 +48,19 @@ public class ResponderAgent extends BaseAgent<DraftResponse> {
         String ticketBody = (String) context.get(TriageContextKeys.TICKET_BODY);
         List<KbChunk> chunks = (List<KbChunk>) context.get(TriageContextKeys.RETRIEVED_CHUNKS);
 
-        String raw;
+        LlmResponse response;
         try {
-            raw = llmClient.complete(SYSTEM_PROMPT, buildUserMessage(ticketBody, chunks));
+            response = llmClient.complete(SYSTEM_PROMPT, buildUserMessage(ticketBody, chunks));
         } catch (Exception e) {
             return AgentResult.failure("Responder LLM call failed: " + e.getMessage());
         }
         try {
-            JsonNode node = objectMapper.readTree(raw);
+            JsonNode node = objectMapper.readTree(response.text());
             String answer = node.get("answer").asText();
             List<String> citedChunkIds = new ArrayList<>();
             node.get("citedChunkIds").forEach(idNode -> citedChunkIds.add(idNode.asText()));
-            return AgentResult.success(new DraftResponse(answer, citedChunkIds));
+            double costUsd = costTracker.costUsd(response.tokenUsage());
+            return AgentResult.success(new DraftResponse(answer, citedChunkIds), costUsd);
         } catch (Exception e) {
             return AgentResult.failure("Failed to parse responder response: " + e.getMessage());
         }

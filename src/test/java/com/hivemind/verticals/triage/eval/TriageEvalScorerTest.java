@@ -16,12 +16,13 @@ class TriageEvalScorerTest {
                 "case-1", "some ticket", Category.BILLING, RoutingDecision.ESCALATE, List.of("chunk-a"));
 
         TriageEvalResult result = TriageEvalScorer.score(
-                evalCase, Category.BILLING, RoutingDecision.ESCALATE, List.of("chunk-a", "chunk-b"), 42);
+                evalCase, Category.BILLING, RoutingDecision.ESCALATE, List.of("chunk-a", "chunk-b"), 42, 0.0012);
 
         assertThat(result.categoryCorrect()).isTrue();
         assertThat(result.routingCorrect()).isTrue();
         assertThat(result.citationRecallMet()).isTrue();
         assertThat(result.latencyMs()).isEqualTo(42);
+        assertThat(result.costUsd()).isEqualTo(0.0012);
     }
 
     @Test
@@ -30,7 +31,7 @@ class TriageEvalScorerTest {
                 "case-2", "some ticket", Category.BILLING, RoutingDecision.AUTO_RESOLVE, List.of());
 
         TriageEvalResult result = TriageEvalScorer.score(
-                evalCase, Category.BUG, RoutingDecision.QUEUE_FOR_HUMAN, List.of(), 10);
+                evalCase, Category.BUG, RoutingDecision.QUEUE_FOR_HUMAN, List.of(), 10, 0.001);
 
         assertThat(result.categoryCorrect()).isFalse();
         assertThat(result.routingCorrect()).isFalse();
@@ -40,7 +41,8 @@ class TriageEvalScorerTest {
     void treatsANullExpectedRoutingAsNotApplicableRatherThanFailed() {
         TriageEvalCase evalCase = new TriageEvalCase("case-3", "some ticket", Category.BUG, null, List.of());
 
-        TriageEvalResult result = TriageEvalScorer.score(evalCase, Category.BUG, RoutingDecision.AUTO_RESOLVE, List.of(), 5);
+        TriageEvalResult result =
+                TriageEvalScorer.score(evalCase, Category.BUG, RoutingDecision.AUTO_RESOLVE, List.of(), 5, 0.001);
 
         assertThat(result.routingCorrect()).isTrue();
     }
@@ -51,7 +53,7 @@ class TriageEvalScorerTest {
                 "case-4", "some ticket", Category.BILLING, null, List.of("required-a", "required-b"));
 
         TriageEvalResult result = TriageEvalScorer.score(
-                evalCase, Category.BILLING, null, List.of("required-b", "unrelated"), 5);
+                evalCase, Category.BILLING, null, List.of("required-b", "unrelated"), 5, 0.001);
 
         assertThat(result.citationRecallMet()).isTrue();
     }
@@ -60,7 +62,7 @@ class TriageEvalScorerTest {
     void citationRecallFailsWhenNoRequiredChunkWasCited() {
         TriageEvalCase evalCase = new TriageEvalCase("case-5", "some ticket", Category.BILLING, null, List.of("required-a"));
 
-        TriageEvalResult result = TriageEvalScorer.score(evalCase, Category.BILLING, null, List.of("unrelated"), 5);
+        TriageEvalResult result = TriageEvalScorer.score(evalCase, Category.BILLING, null, List.of("unrelated"), 5, 0.001);
 
         assertThat(result.citationRecallMet()).isFalse();
     }
@@ -69,7 +71,7 @@ class TriageEvalScorerTest {
     void citationRecallIsVacuouslyMetWhenCaseRequiresNoCitations() {
         TriageEvalCase evalCase = new TriageEvalCase("case-6", "some ticket", Category.OTHER, null, List.of());
 
-        TriageEvalResult result = TriageEvalScorer.score(evalCase, Category.OTHER, null, List.of(), 5);
+        TriageEvalResult result = TriageEvalScorer.score(evalCase, Category.OTHER, null, List.of(), 5, 0.0);
 
         assertThat(result.citationRecallMet()).isTrue();
     }

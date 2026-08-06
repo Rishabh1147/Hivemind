@@ -47,6 +47,11 @@ hivemind:
     retry:
       max-attempts: 3
       base-backoff-ms: 500
+    pricing:
+      # Placeholders, not verified published pricing for `model` above — update to the real rate
+      # before trusting the dollar figures for anything beyond exercising the cost-per-ticket gate.
+      input-cost-per-million-tokens: 3.00
+      output-cost-per-million-tokens: 15.00
   tool:
     timeout-ms: 5000
     retry:
