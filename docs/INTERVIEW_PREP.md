@@ -640,13 +640,14 @@ substituting for the other.
 
 **Q: The eval harness has been ready to gate CI since session 10 — why doesn't the GitHub Actions
 workflow (session 11) actually run it?**
-Cost and secrets, weighed honestly rather than defaulted past. Running the eval harness means real
-Claude API calls — a live `ANTHROPIC_API_KEY` would have to sit in GitHub Actions secrets, and every
-push/PR would burn real money, for a project still at 10 of the 50+ target eval cases. `./mvnw test`
-(35 tests) needs neither: Testcontainers spins up its own Postgres and Kafka per test class, so the
-whole suite is self-contained and free to run on every push. The eval harness stays a deliberate,
+Cost and secrets, weighed honestly rather than defaulted past — and, as of session 13, no longer a
+question of the eval set being too small either (it hit the 50+ target). Running the eval harness
+means real Claude API calls — a live `ANTHROPIC_API_KEY` would have to sit in GitHub Actions secrets,
+and every push/PR would burn real money, regardless of how many cases exist. `./mvnw test` (43 tests
+today) needs neither: Testcontainers spins up its own Postgres and Kafka per test class, so the whole
+suite is self-contained and free to run on every push. The eval harness stays a deliberate,
 local/manual gate for now — the honest state is "CI-gated on tests, not yet on evals," not "CI-gated"
-unqualified. Revisit once the eval set and the interview story around cost justify the spend.
+unqualified. Revisit once the interview story around cost justifies the spend.
 
 **Q: Why is `./mvnw test` alone sufficient as the whole CI command — no separate integration-test
 phase?**

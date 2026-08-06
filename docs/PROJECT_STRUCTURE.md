@@ -31,7 +31,7 @@ Hivemind/
 │   └── devlog/                           ✅ one file per session, e.g. 2026-07-20.md
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                        ✅ build + 35 tests on every push/PR to main — evals deliberately not gated here yet (cost/secrets, see EVALS.md)
+│       ├── ci.yml                        ✅ build + 43 tests on every push/PR to main — evals deliberately not gated here yet (cost/secrets, see EVALS.md)
 │       └── deploy.yml                    # K8s deploy — not added yet
 ├── evals/
 │   └── triage/                           ✅ 53 hand-written *.json cases (target 50+ met, per docs/EVALS.md)
@@ -48,7 +48,7 @@ Hivemind/
     │       ├── application.yml           ✅
     │       └── db/migration/             ✅ V1__create_tickets_table.sql, V2__create_audit_events_table.sql
     └── test/
-        └── java/com/hivemind/            ✅ 14 test classes, 35 tests (incl. shared AbstractPostgresIntegrationTest base)
+        └── java/com/hivemind/            ✅ 15 test classes, 43 tests (plus a shared AbstractPostgresIntegrationTest base, not a test class itself)
 ```
 
 ## `com.hivemind.platform` — the vertical-agnostic core
@@ -69,7 +69,7 @@ platform/
 ├── retry/
 │   └── JitteredExponentialBackoff.java   ✅ shared backoff math (LlmClient + ToolInvoker)
 ├── planner/
-│   └── PlannerAgent.java                 # generic planner — not built; only one agent exists so far
+│   └── PlannerAgent.java                 # generic planner — not built; the 4-agent triage pipeline is still four fixed Kafka hops, not planner-dispatched
 ├── memory/
 │   ├── ShortTermMemory.java              # Redis — not built
 │   ├── LongTermMemory.java               # pgvector — not built
@@ -194,13 +194,14 @@ resources/
 
 Eval cases are **data**, not source code. They live in `evals/<vertical>/`
 at the repo root so they can be edited by humans, possibly by non-engineers
-later, without classpath bloat or recompilation — `evals/triage/` has 10
-cases today. Run cases with `./mvnw spring-boot:run -Dspring-boot.run.profiles=eval`;
-results land in `eval-results/<timestamp>.json` (gitignored). Thresholds in
-`application.yml` (`hivemind.eval.thresholds.*`) are now read and gated on
-by `TriageEvalHarnessRunner` — `category-accuracy`, `citation-recall`, and
-`p95-latency-ms` only; `tone-min-avg` and `cost-per-ticket-usd` stay
-configured but ungated (see `docs/EVALS.md` for why).
+later, without classpath bloat or recompilation — `evals/triage/` has 53
+cases today, meeting the 50+ target. Run cases with
+`./mvnw spring-boot:run -Dspring-boot.run.profiles=eval`; results land in
+`eval-results/<timestamp>.json` (gitignored). Thresholds in `application.yml`
+(`hivemind.eval.thresholds.*`) are read and gated on by
+`TriageEvalHarnessRunner` — `category-accuracy`, `citation-recall`,
+`p95-latency-ms`, and (as of session 14) `cost-per-ticket-usd`; only
+`tone-min-avg` stays configured but ungated (see `docs/EVALS.md` for why).
 
 ## Frontend — separate sibling
 
@@ -208,18 +209,19 @@ The Next.js dashboard lives in `frontend/` at the repo root, once built.
 It is a sibling of the Spring Boot app, not a Spring resource. It builds
 and deploys independently.
 
-## Current state (as of 2026-07-30, session 10)
+## Current state (as of 2026-08-05, session 14)
 
-Real code exists in `platform/agent`, `platform/llm`, `platform/messaging`
-(including the generic `EventConsumer` base and `AuditLog`), `platform/tool`,
-`platform/retry`, all of `verticals/triage` except four planned tool files,
-and `infra/{config,persistence}`. Local Kafka and Postgres both run via
-`docker-compose.yml` — Kafka carrying four chained consumers (classify →
-retrieve → respond → route), Postgres backing both `TicketRepository`
-(current state) and `AuditLog` (immutable event history). `evals/triage/`
-has 10 real cases, run via the `eval` Spring profile. Nothing under `k8s/`,
-`frontend/`, or `.github/workflows/` exists yet — those are still purely
-descriptions, filled in as their sessions come up.
+Real code exists in `platform/agent`, `platform/llm` (including `LlmResponse`/`CostTracker`),
+`platform/messaging` (including the generic `EventConsumer` base and `AuditLog`), `platform/tool`,
+`platform/retry`, all of `verticals/triage` except four planned tool files, `infra/{config,persistence}`
+(including `TracingConfig`), and `.github/workflows/ci.yml`. Local Kafka and Postgres both run via
+`docker-compose.yml` — Kafka carrying four chained consumers (classify → retrieve → respond → route)
+with a single trace id propagated via Kafka headers across every hop, Postgres backing both
+`TicketRepository` (current state) and `AuditLog` (immutable event history). `evals/triage/` has 53
+real cases (the 50+ target, met session 13), run via the `eval` Spring profile and gated on four of
+five configured thresholds. GitHub Actions CI runs the 43-test suite on every push/PR — not yet the
+eval harness itself. Nothing under `k8s/` or `frontend/` exists yet — those are still purely
+descriptions, filled in if/when their sessions come up.
 
 For the full narrative — what each of these pieces actually does, the
 request lifecycle as it genuinely runs today, and the reasoning behind
