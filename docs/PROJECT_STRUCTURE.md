@@ -21,7 +21,7 @@ Hivemind/
 ├── pom.xml                               ✅
 ├── README.md                             ✅
 ├── OVERVIEW.md                           (gitignored — personal prep doc, not part of the tracked repo)
-├── docker-compose.yml                    ✅ local dev Kafka (KRaft) + Postgres. Redis added later
+├── docker-compose.yml                    ✅ local dev Kafka (KRaft) + Postgres + Jaeger. Redis added later
 ├── docs/
 │   ├── ARCHITECTURE.md                   ✅
 │   ├── EVALS.md                          ✅ design doc — harness now built (verticals/triage/eval/), 53 of the 50+ target cases exist
@@ -163,7 +163,7 @@ infra/
 ├── config/
 │   ├── KafkaConfig.java                  ✅ NewTopic beans for triage's five topics
 │   ├── ClaudeConfig.java                 ✅ LangChain4j AnthropicChatModel bean
-│   ├── TracingConfig.java                ✅ LoggingSpanExporter bean — the only wiring OTel tracing needs; Tracer/Propagator are autoconfigured
+│   ├── TracingConfig.java                ✅ LoggingSpanExporter bean, kept alongside the OTLP exporter Spring Boot autoconfigures from `management.otlp.tracing.endpoint`; Tracer/Propagator are autoconfigured too
 │   ├── PostgresConfig.java               # not built — spring-boot-starter-jdbc autoconfigures the DataSource/JdbcTemplate, nothing custom needed yet
 │   └── RedisConfig.java                  # not built
 └── persistence/
@@ -209,19 +209,23 @@ The Next.js dashboard lives in `frontend/` at the repo root, once built.
 It is a sibling of the Spring Boot app, not a Spring resource. It builds
 and deploys independently.
 
-## Current state (as of 2026-08-05, session 14)
+## Current state (as of 2026-08-08, session 17)
 
-Real code exists in `platform/agent`, `platform/llm` (including `LlmResponse`/`CostTracker`),
-`platform/messaging` (including the generic `EventConsumer` base and `AuditLog`), `platform/tool`,
-`platform/retry`, all of `verticals/triage` except four planned tool files, `infra/{config,persistence}`
-(including `TracingConfig`), and `.github/workflows/ci.yml`. Local Kafka and Postgres both run via
-`docker-compose.yml` — Kafka carrying four chained consumers (classify → retrieve → respond → route)
-with a single trace id propagated via Kafka headers across every hop, Postgres backing both
-`TicketRepository` (current state) and `AuditLog` (immutable event history). `evals/triage/` has 53
-real cases (the 50+ target, met session 13), run via the `eval` Spring profile and gated on four of
-five configured thresholds. GitHub Actions CI runs the 43-test suite on every push/PR — not yet the
-eval harness itself. Nothing under `k8s/` or `frontend/` exists yet — those are still purely
-descriptions, filled in if/when their sessions come up.
+Real code exists in `platform/agent`, `platform/llm` (including `LlmResponse`/`CostTracker`, and,
+since session 15, the `llm.complete` tracing span inside `LlmClient` itself), `platform/messaging`
+(including the generic `EventConsumer` base and `AuditLog`), `platform/tool` (including, since
+session 16, the `tool.invoke` tracing span inside `ToolInvoker`), `platform/retry`, all of
+`verticals/triage` except four planned tool files, `infra/{config,persistence}` (including
+`TracingConfig`), and `.github/workflows/ci.yml`. Local Kafka, Postgres, and (since session 17)
+Jaeger all run via `docker-compose.yml` — Kafka carrying four chained consumers
+(classify → retrieve → respond → route) with a single trace id propagated via Kafka headers across
+every hop and every LLM/tool call inside those hops, exported both as log lines and, now, over OTLP
+to the real Jaeger container; Postgres backing both `TicketRepository` (current state) and
+`AuditLog` (immutable event history). `evals/triage/` has 53 real cases (the 50+ target, met session
+13), run via the `eval` Spring profile and gated on four of five configured thresholds. GitHub
+Actions CI runs the 43-test suite on every push/PR — not yet the eval harness itself. Nothing under
+`k8s/` or `frontend/` exists yet — those are still purely descriptions, filled in if/when their
+sessions come up.
 
 For the full narrative — what each of these pieces actually does, the
 request lifecycle as it genuinely runs today, and the reasoning behind

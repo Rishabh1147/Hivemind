@@ -102,20 +102,31 @@ stateless beyond what's in the Kafka event and the `tickets` row itself.*
 
 ## Observability
 
-*Implementation status (as of 2026-08-06): HTTP spans, Kafka producer/consumer spans, and LLM spans
-are all real. `LlmClient.complete()` opens one `llm.complete` span per logical call (covering every
-retry attempt underneath it, not one span per attempt) and tags `llm.model` and `llm.latency_ms`
-always, plus `llm.input_tokens`/`llm.output_tokens`/`llm.cost_usd` when the call actually succeeds
-(nothing to report on a failed call — verified by triggering the real failure path against a dummy
-key: the span comes through with only `llm.model`/`llm.latency_ms` set, `llm.cost_usd` correctly
-absent). `llm.cost_usd` reuses `CostTracker` — moved from being called separately by each agent to
-being called once inside `LlmClient` itself, so token-to-dollar conversion and span tagging both read
-from the same number. Not yet tagged: `llm.vertical` (no vertical concept is plumbed into `LlmClient`
-today — nothing downstream needs it with only one vertical calling in) and tool spans (`ToolInvoker`
-isn't instrumented at all). Exporting is a `LoggingSpanExporter` (spans as log lines) — real and
-verified, but not Prometheus/Grafana; see the 2026-08-01 devlog for the "why the logging exporter for
-now" reasoning, 2026-08-05 for `CostTracker`'s original build, and 2026-08-06 for wiring the two
-together.*
+*Implementation status (as of 2026-08-08): HTTP spans, Kafka producer/consumer spans, LLM spans, and
+tool spans are all real — every span type this section lists now exists. `LlmClient.complete()` opens
+one `llm.complete` span per logical call (covering every retry attempt underneath it, not one span
+per attempt) and tags `llm.model` and `llm.latency_ms` always, plus
+`llm.input_tokens`/`llm.output_tokens`/`llm.cost_usd` when the call actually succeeds (nothing to
+report on a failed call — verified by triggering the real failure path against a dummy key: the span
+comes through with only `llm.model`/`llm.latency_ms` set, `llm.cost_usd` correctly absent).
+`llm.cost_usd` reuses `CostTracker` — moved from being called separately by each agent to being called
+once inside `LlmClient` itself, so token-to-dollar conversion and span tagging both read from the same
+number. `ToolInvoker.invoke()` follows the identical shape: one `tool.invoke` span per logical call
+covering every retry, tagging `tool.name`/`tool.success`/`tool.retry_count` — verified against the
+real running app for the success path too (`searchKb` needs no LLM key, so this is the one span type
+confirmed with `tool.success="true"`, not only on a forced-failure path). Not yet tagged anywhere:
+`llm.vertical`/`tool.vertical` — no vertical concept is plumbed into either `LlmClient` or
+`ToolInvoker` today, and nothing downstream needs one with only one vertical calling in. Exporting is
+no longer just a `LoggingSpanExporter`: as of 2026-08-08, `docker-compose.yml` also runs a real Jaeger
+container, and `management.otlp.tracing.endpoint` sends every span there over OTLP alongside the log
+lines — Spring Boot composes every `SpanExporter` bean it finds into one composite, so both fire on
+every span, not a swap. Verified by querying Jaeger's own REST API (`/api/services`, `/api/traces`)
+after a real ticket POST, not just trusting the config: the trace came back with all six spans,
+including the `llm.complete` span's real Anthropic auth error surfaced automatically as
+`otel.status_code=ERROR`. Still not Prometheus/Grafana (Jaeger is a trace store, not a metrics
+backend) — see the 2026-08-01 devlog for the original "why the logging exporter for now" reasoning,
+2026-08-05 for `CostTracker`'s build, 2026-08-06 for wiring LLM spans, 2026-08-08 for tool spans and
+the Jaeger/OTLP exporter.*
 
 OpenTelemetry instruments:
 

@@ -36,3 +36,12 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: hivemind-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # Jaeger UI
+      - "4318:4318" # OTLP HTTP receiver — matches management.otlp.tracing.endpoint below

@@ -7,6 +7,7 @@ import com.hivemind.platform.tool.ToolRegistry;
 import com.hivemind.verticals.triage.kb.KbChunk;
 import com.hivemind.verticals.triage.kb.KnowledgeBase;
 import com.hivemind.verticals.triage.tools.SearchKbTool;
+import io.micrometer.tracing.Tracer;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -18,7 +19,7 @@ import static org.mockito.Mockito.when;
 
 class RetrieverAgentTest {
 
-    private final ToolInvoker toolInvoker = new ToolInvoker(200, 3, 1);
+    private final ToolInvoker toolInvoker = new ToolInvoker(Tracer.NOOP, 200, 3, 1);
 
     @Test
     void returnsMatchingChunksWhenSearchKbToolIsRegistered() {

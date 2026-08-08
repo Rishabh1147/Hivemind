@@ -66,7 +66,7 @@ every design choice.
 | Messaging | **Apache Kafka** (KRaft) | ✅ durable event bus between all four agents |
 | Persistence | **PostgreSQL 16 + Flyway** | ✅ ticket state + immutable audit log (`JdbcTemplate`, not JPA) |
 | Testing | **Testcontainers** | ✅ real Postgres + Kafka per integration test, no mocks |
-| Observability | **Micrometer Tracing + OpenTelemetry** | ✅ one trace id across the HTTP request, every Kafka hop, and every LLM call, exported as log lines — no tool-call spans yet, no Prometheus/Grafana |
+| Observability | **Micrometer Tracing + OpenTelemetry** | ✅ one trace id across the HTTP request, every Kafka hop, every LLM call, and every tool call — exported as log lines *and* over OTLP to a real Jaeger backend (`docker-compose.yml`), queryable via Jaeger's own UI/API, not Prometheus/Grafana |
 | Cost tracking | **`CostTracker`** | ✅ real per-call USD from token counts, tagged onto the LLM span as `llm.cost_usd`; pricing rates are placeholders, not verified published prices |
 | CI | **GitHub Actions** | ✅ full test suite on every push/PR — not yet gating on the eval harness itself (cost/secrets tradeoff) |
 | Vector DB | pgvector | ❌ planned — knowledge base is 5 hardcoded chunks today |
@@ -125,8 +125,8 @@ today" above for what's real right now.
         │
    ┌────▼─────────────────────────────────────────────┐
    │ Shared infra: Postgres (real) + pgvector (planned),
-   │ Redis (planned), OpenTelemetry (partial — HTTP/Kafka/LLM
-   │ spans real, tool spans planned), eval harness (real)
+   │ Redis (planned), OpenTelemetry (HTTP/Kafka/LLM/tool spans
+   │ real, exported to real Jaeger), eval harness (real)
    └──────────────────────────────────────────────────┘
 ```
 
@@ -145,8 +145,9 @@ for the package layout, file by file, built vs. planned.
 - [x] Tool registry + first real tool (`searchKb`), timeout/retry/virtual-thread sandboxing
 - [x] Eval harness — 53 cases (50+ target met), gated on category accuracy / citation recall / p95 latency / cost-per-ticket
 - [x] GitHub Actions CI — full test suite on every push/PR
-- [x] Distributed tracing — one trace id across the HTTP request, every Kafka hop, and every LLM call
-      (`llm.model`/`llm.cost_usd`/token-count span tags)
+- [x] Distributed tracing — one trace id across the HTTP request, every Kafka hop, every LLM call
+      (`llm.model`/`llm.cost_usd`/token-count tags), and every tool call (`tool.name`/`tool.success`/
+      `tool.retry_count` tags), exported to a real Jaeger backend over OTLP (plus log lines)
 - [ ] CI gating on the eval harness itself (currently tests only)
 - [ ] Tone scoring (LLM-as-judge) — the one eval threshold still ungated
 - [ ] A dynamic planner that decides the pipeline instead of four hardcoded Kafka hops
@@ -168,11 +169,11 @@ for the package layout, file by file, built vs. planned.
 
 ## Quick start
 
-Requires Docker (for Kafka + Postgres) and a JDK 21. An `ANTHROPIC_API_KEY` is only needed for real
-classify/respond calls to succeed — the app boots and the test suite passes without one.
+Requires Docker (for Kafka + Postgres + Jaeger) and a JDK 21. An `ANTHROPIC_API_KEY` is only needed
+for real classify/respond calls to succeed — the app boots and the test suite passes without one.
 
 ```bash
-docker compose up -d          # Kafka (KRaft) + Postgres
+docker compose up -d          # Kafka (KRaft) + Postgres + Jaeger
 ./mvnw test                   # 43 tests — Testcontainers spins up its own Kafka/Postgres, no external services needed
 ANTHROPIC_API_KEY=sk-... ./mvnw spring-boot:run
 
@@ -183,6 +184,9 @@ curl -X POST localhost:8080/api/v1/triage/tickets \
 
 curl localhost:8080/api/v1/triage/tickets/<id>   # poll for classified → responded → routed
 ```
+
+Open `http://localhost:16686` for the Jaeger UI and search for service `hivemind` to see the trace
+from that request — one trace id spanning the HTTP call, every Kafka hop, and the LLM call.
 
 Run the eval harness locally (also needs a real key to produce a meaningful score, not just a
 correctly-failing one):

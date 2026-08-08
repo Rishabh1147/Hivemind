@@ -1,5 +1,6 @@
 package com.hivemind.platform.tool;
 
+import io.micrometer.tracing.Tracer;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
@@ -10,7 +11,7 @@ class ToolInvokerTest {
 
     @Test
     void returnsPayloadOnFirstSuccess() {
-        ToolInvoker invoker = new ToolInvoker(200, 3, 1);
+        ToolInvoker invoker = new ToolInvoker(Tracer.NOOP, 200, 3, 1);
 
         ToolResult<String> result = invoker.invoke("dummy", () -> "ok");
 
@@ -20,7 +21,7 @@ class ToolInvokerTest {
 
     @Test
     void retriesOnTimeoutThenSucceeds() {
-        ToolInvoker invoker = new ToolInvoker(50, 3, 1);
+        ToolInvoker invoker = new ToolInvoker(Tracer.NOOP, 50, 3, 1);
         AtomicInteger calls = new AtomicInteger();
 
         ToolResult<String> result = invoker.invoke("dummy", () -> {
@@ -37,7 +38,7 @@ class ToolInvokerTest {
 
     @Test
     void failsAfterExhaustingRetriesOnPersistentTimeout() {
-        ToolInvoker invoker = new ToolInvoker(50, 2, 1);
+        ToolInvoker invoker = new ToolInvoker(Tracer.NOOP, 50, 2, 1);
 
         ToolResult<String> result = invoker.invoke("dummy", () -> {
             Thread.sleep(500);
@@ -50,7 +51,7 @@ class ToolInvokerTest {
 
     @Test
     void doesNotRetryOnNonTimeoutFailure() {
-        ToolInvoker invoker = new ToolInvoker(200, 3, 1);
+        ToolInvoker invoker = new ToolInvoker(Tracer.NOOP, 200, 3, 1);
         AtomicInteger calls = new AtomicInteger();
 
         ToolResult<String> result = invoker.invoke("dummy", () -> {

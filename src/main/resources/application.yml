@@ -28,6 +28,14 @@ management:
     sampling:
       # 100% for a low-traffic portfolio demo — a real deployment would sample well below 1.0.
       probability: 1.0
+  otlp:
+    tracing:
+      # Jaeger's OTLP HTTP receiver (see docker-compose.yml). If Jaeger isn't running, span export
+      # here just fails and logs a warning per batch — it doesn't affect request handling, since
+      # OTel's span processor exports asynchronously. LoggingSpanExporter (TracingConfig) stays
+      # registered alongside this one, so `./mvnw test`/local runs without docker-compose still get
+      # spans as log lines with zero extra infra.
+      endpoint: ${HIVEMIND_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:

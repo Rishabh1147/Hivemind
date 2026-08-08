@@ -33,15 +33,17 @@ event history persisted in real Postgres (`TicketRepository`, `AuditLog`), and a
 gates on category accuracy / citation recall / p95 latency / cost-per-ticket (session 14, real
 `TokenUsage`-derived cost via `CostTracker`) with a real process exit code. GitHub Actions CI
 (session 11) runs the 43-test suite on every push/PR. Distributed tracing (session 12) follows one
-trace id across the HTTP request and every Kafka hop, exported as log lines. The full
-`ARCHITECTURE.md` pipeline is real except the `Stream` step (SSE to a dashboard that doesn't exist).
-Still not built: a planner that *decides* the chain dynamically (it's four hardcoded consumer→topic
-links, not planner-routed), pgvector-backed KB persistence (`KnowledgeBase` is still 5 hardcoded
-chunks), the eval harness's tone scoring (the one threshold still ungated — needs a live LLM-as-judge
-call), CI gating on the eval harness itself (cost/secrets tradeoff, deliberate), a real OTLP tracing
-backend (currently just a logging exporter), `CostTracker`'s pricing rates being real verified
-numbers rather than placeholders, frontend. Check `docs/devlog/` for the current honest state before
-claiming anything more specific.
+trace id across the HTTP request, every Kafka hop, every LLM call (session 15), and every tool call
+(session 16) — every span type `ARCHITECTURE.md` names is real now — exported both as log lines and,
+as of session 17, to a real Jaeger backend over OTLP (queryable through Jaeger's own UI/API, not just
+grepped log lines). The full `ARCHITECTURE.md` pipeline is real except the `Stream` step (SSE to a
+dashboard that doesn't exist). Still not built: a planner that *decides* the chain dynamically (it's
+four hardcoded consumer→topic links, not planner-routed), pgvector-backed KB persistence
+(`KnowledgeBase` is still 5 hardcoded chunks), the eval harness's tone scoring (the one threshold
+still ungated — needs a live LLM-as-judge call), CI gating on the eval harness itself (cost/secrets
+tradeoff, deliberate), `llm.vertical`/`tool.vertical` span tags, `CostTracker`'s pricing rates being
+real verified numbers rather than placeholders, frontend. Check `docs/devlog/` for the current honest
+state before claiming anything more specific.
 
 ## LLM / agent orchestration
 
@@ -677,12 +679,33 @@ passes a trace id as data; the propagation is entirely a side effect of the two 
 (`EventBus`, `EventConsumer`) every stage already went through for other reasons.
 
 **Q: Why the logging exporter instead of standing up Jaeger or an OTLP collector?**
-Same "don't build the second thing until the first thing needs it" discipline used everywhere else
-in this codebase. A `LoggingSpanExporter` bean is the entire wiring cost — one `@Bean` method — and
-it's enough to prove the mechanism works: grep the logs for a trace id and see every span that shares
-it. A real backend is a one-bean swap later (add an OTLP exporter, point it at a collector), not a
-rewrite; standing up Jaeger now to demo something a log grep already proves would be infrastructure
-for its own sake.
+That was the answer through session 16 — same "don't build the second thing until the first thing
+needs it" discipline used everywhere else in this codebase, and a `LoggingSpanExporter` bean (one
+`@Bean` method) was enough to prove the propagation mechanism worked at all. Session 17 stood up
+Jaeger for real, once every span type (HTTP, Kafka, LLM, tool) actually existed to look at — a trace
+search UI is a genuinely better artifact than a log grep once there's enough going on in a trace to
+want to *browse* it, and Jaeger's `docker-compose` footprint is one more service in a file that
+already has two. It's not a swap: Spring Boot composes every `SpanExporter` bean present into one
+composite exporter, so `LoggingSpanExporter` stayed registered right alongside the new OTLP one — a
+plain `./mvnw test` or a local run without `docker compose up` still gets spans as log lines with zero
+extra infra, and the full stack additionally gets them in Jaeger. `management.otlp.tracing.endpoint`
+points at Jaeger's OTLP HTTP receiver; if Jaeger isn't running, that export just fails quietly per
+batch (OTel's span processor is async), which is exactly what happened in every test run before this
+session added Jaeger to `docker-compose.yml` — nothing broke, spans just had nowhere to go.
+
+**Q: How was the Jaeger/OTLP wiring actually verified?**
+Not by trusting that `management.otlp.tracing.endpoint` was spelled right — by querying Jaeger's own
+REST API. `docker compose up` (now including Jaeger), booted the app, POSTed a ticket, then
+`curl http://localhost:16686/api/services` came back with `["jaeger-all-in-one", "hivemind"]` —
+proof the service was actually registering traces, not just that the container was running.
+`curl http://localhost:16686/api/traces?service=hivemind` then returned the full trace as JSON: the
+same six spans the log-line verification has always shown, but this time round-tripped through a real
+OTLP export and a real trace store, with the `llm.complete` span even carrying the real Anthropic
+error (`otel.status_code=ERROR`, the actual `invalid x-api-key` message in
+`otel.status_description`) — Jaeger surfaced that automatically from the `span.error(e)` call already
+in `LlmClient`, no extra code needed for it to show up there. Also hand-published a `TicketClassified`
+event to trigger `RetrieverAgent`/`ToolInvoker` (the session 16 trick, still useful) and confirmed the
+`tool.invoke searchKb` span landed in Jaeger too, tags and all.
 
 **Q: How was propagation actually verified, versus just "the code compiles and looks right"?**
 Real infra, real Kafka hop, real log output — not a unit test with a mocked `Propagator`. Started
