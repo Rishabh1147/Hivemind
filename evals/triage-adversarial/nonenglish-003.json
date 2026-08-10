@@ -1,0 +1,7 @@
+{
+  "id": "nonenglish-003",
+  "ticket": "कृपया डैशबोर्ड में डार्क मोड सुविधा जोड़ें। रात में काम करते समय स्क्रीन बहुत तेज़ रोशनी वाली लगती है, यह सुविधा बहुत उपयोगी होगी।",
+  "expectedCategory": "FEATURE_REQUEST",
+  "expectedRouting": null,
+  "mustCite": ["feature-request-process"]
+}

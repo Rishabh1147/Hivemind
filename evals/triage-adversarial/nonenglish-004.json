@@ -1,0 +1,7 @@
+{
+  "id": "nonenglish-004",
+  "ticket": "Minha assinatura foi marcada como atrasada mesmo depois que o pagamento foi aprovado duas vezes esta semana. Por favor verifiquem o que esta acontecendo com as tentativas de cobranca.",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-failed-payment"]
+}

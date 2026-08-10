@@ -1,0 +1,7 @@
+{
+  "id": "multiissue-001",
+  "ticket": "I was charged twice for my subscription this month — please check the transaction log and refund the duplicate charge. Separately, the mobile app also keeps crashing whenever I open the settings screen, which is annoying but less urgent than the billing issue.",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-duplicate-charge"]
+}

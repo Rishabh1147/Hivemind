@@ -27,6 +27,11 @@ import java.nio.file.Path;
  * Claude call — see {@code TriageEvalReport.avgCostUsd()}). {@code tone-min-avg} still needs an
  * LLM-as-judge call no session yet has had a live Anthropic key to verify against, so it stays
  * configured but explicitly not gated on, rather than gated on a number that was never measured.
+ *
+ * <p>Also runs {@link TriageEvalRunner#runAdversarial()} — the 20-case set {@code docs/EVALS.md}
+ * describes — and writes its own report file, but never folds it into the pass/fail decision above:
+ * that set is deliberately designed to surface known weaknesses (prompt injection, non-English
+ * grounding, and so on) and is tracked over time, not gated, per {@code docs/EVALS.md}.
  */
 @Component
 @Profile("eval")
@@ -62,7 +67,7 @@ public class TriageEvalHarnessRunner implements CommandLineRunner {
     @Override
     public void run(String... args) throws Exception {
         TriageEvalReport report = evalRunner.run();
-        writeReport(report);
+        writeReport(report, "");
 
         log.info(
                 "Eval run complete: {} cases ({} errored), category accuracy {}, routing accuracy {}, "
@@ -85,16 +90,26 @@ public class TriageEvalHarnessRunner implements CommandLineRunner {
             log.info("Eval run PASSED all gating thresholds");
         }
 
+        TriageEvalReport adversarialReport = evalRunner.runAdversarial();
+        writeReport(adversarialReport, "-adversarial");
+        log.info(
+                "Adversarial eval run complete (not gated, tracked only): {} cases ({} errored), category "
+                        + "accuracy {}, citation recall {}",
+                adversarialReport.totalCases(), adversarialReport.erroredCases(),
+                adversarialReport.categoryAccuracy(), adversarialReport.citationRecall());
+
         // SpringApplication.exit(...) only computes the exit code and closes the context — it does
         // not terminate the JVM. Forgetting the surrounding System.exit(...) is a real, easy-to-miss
         // bug: the process exits 0 regardless of gating result unless this call wraps it explicitly.
+        // Only the primary report's `passed` result decides this — the adversarial run above never
+        // affects the exit code, per docs/EVALS.md ("these don't gate CI but are tracked over time").
         System.exit(SpringApplication.exit(applicationContext, () -> passed ? 0 : 1));
     }
 
-    private void writeReport(TriageEvalReport report) throws IOException {
+    private void writeReport(TriageEvalReport report, String suffix) throws IOException {
         Path resultsDir = Path.of("eval-results");
         Files.createDirectories(resultsDir);
-        Path reportFile = resultsDir.resolve(report.runAt().toString().replace(":", "-") + ".json");
+        Path reportFile = resultsDir.resolve(report.runAt().toString().replace(":", "-") + suffix + ".json");
         objectMapper.writerWithDefaultPrettyPrinter().writeValue(reportFile.toFile(), report);
         log.info("Wrote eval report to {}", reportFile);
     }

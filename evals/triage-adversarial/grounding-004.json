@@ -1,0 +1,7 @@
+{
+  "id": "grounding-004",
+  "ticket": "Is your service GDPR compliant, and where are your production servers physically located? We need this for a vendor security questionnaire before renewing our contract.",
+  "expectedCategory": "OTHER",
+  "expectedRouting": null,
+  "mustCite": []
+}

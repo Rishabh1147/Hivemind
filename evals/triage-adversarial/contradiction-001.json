@@ -1,0 +1,7 @@
+{
+  "id": "contradiction-001",
+  "ticket": "I was charged twice for my subscription this billing cycle. Actually wait, looking again I don't think I was charged at all this month — my card shows nothing. Either way something is wrong with my billing, please check the transaction log.",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-duplicate-charge"]
+}

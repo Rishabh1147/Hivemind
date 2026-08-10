@@ -1,0 +1,7 @@
+{
+  "id": "grounding-001",
+  "ticket": "How do I export all of my account data to a CSV file? I need it for an internal audit and can't find the option anywhere in the dashboard.",
+  "expectedCategory": "OTHER",
+  "expectedRouting": null,
+  "mustCite": []
+}

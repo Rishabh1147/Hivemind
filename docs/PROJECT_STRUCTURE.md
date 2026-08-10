@@ -24,17 +24,18 @@ Hivemind/
 ├── docker-compose.yml                    ✅ local dev Kafka (KRaft) + Postgres + Jaeger. Redis added later
 ├── docs/
 │   ├── ARCHITECTURE.md                   ✅
-│   ├── EVALS.md                          ✅ design doc — harness now built (verticals/triage/eval/), 53 of the 50+ target cases exist
+│   ├── EVALS.md                          ✅ design doc — harness now built (verticals/triage/eval/), 53 of the 50+ target cases exist, plus a separate 20-case adversarial set
 │   ├── EXTENDING.md                      ✅
 │   ├── PROJECT_STRUCTURE.md              ✅ this file
 │   ├── INTERVIEW_PREP.md                 ✅ cumulative Q&A, topic-organized
 │   └── devlog/                           ✅ one file per session, e.g. 2026-07-20.md
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                        ✅ build + 43 tests on every push/PR to main — evals deliberately not gated here yet (cost/secrets, see EVALS.md)
+│       ├── ci.yml                        ✅ build + 48 tests on every push/PR to main — evals deliberately not gated here yet (cost/secrets, see EVALS.md)
 │       └── deploy.yml                    # K8s deploy — not added yet
 ├── evals/
-│   └── triage/                           ✅ 53 hand-written *.json cases (target 50+ met, per docs/EVALS.md)
+│   ├── triage/                           ✅ 53 hand-written *.json cases (target 50+ met, per docs/EVALS.md)
+│   └── triage-adversarial/               ✅ 20 hand-written *.json cases — tracked, not CI-gated (per docs/EVALS.md)
 ├── k8s/                                  # not added yet
 ├── frontend/                             # Next.js dashboard — not added yet
 └── src/
@@ -48,7 +49,7 @@ Hivemind/
     │       ├── application.yml           ✅
     │       └── db/migration/             ✅ V1__create_tickets_table.sql, V2__create_audit_events_table.sql
     └── test/
-        └── java/com/hivemind/            ✅ 15 test classes, 43 tests (plus a shared AbstractPostgresIntegrationTest base, not a test class itself)
+        └── java/com/hivemind/            ✅ 16 test classes, 48 tests (plus a shared AbstractPostgresIntegrationTest base, not a test class itself)
 ```
 
 ## `com.hivemind.platform` — the vertical-agnostic core
@@ -195,13 +196,19 @@ resources/
 Eval cases are **data**, not source code. They live in `evals/<vertical>/`
 at the repo root so they can be edited by humans, possibly by non-engineers
 later, without classpath bloat or recompilation — `evals/triage/` has 53
-cases today, meeting the 50+ target. Run cases with
+cases today, meeting the 50+ target, and `evals/triage-adversarial/` has a
+separate 20 (session 18, 2026-08-10) — same `TriageEvalCase` schema, run
+through the identical pipeline via `TriageEvalRunner.runAdversarial()`, but
+never gated. Run cases with
 `./mvnw spring-boot:run -Dspring-boot.run.profiles=eval`; results land in
-`eval-results/<timestamp>.json` (gitignored). Thresholds in `application.yml`
+`eval-results/<timestamp>.json` and `eval-results/<timestamp>-adversarial.json`
+(both gitignored). Thresholds in `application.yml`
 (`hivemind.eval.thresholds.*`) are read and gated on by
 `TriageEvalHarnessRunner` — `category-accuracy`, `citation-recall`,
-`p95-latency-ms`, and (as of session 14) `cost-per-ticket-usd`; only
-`tone-min-avg` stays configured but ungated (see `docs/EVALS.md` for why).
+`p95-latency-ms`, and (as of session 14) `cost-per-ticket-usd` — only for the
+primary set; only `tone-min-avg` stays configured but ungated for that set
+(see `docs/EVALS.md` for why), and the adversarial set's report is written
+and logged but structurally excluded from the pass/fail decision entirely.
 
 ## Frontend — separate sibling
 
@@ -209,7 +216,7 @@ The Next.js dashboard lives in `frontend/` at the repo root, once built.
 It is a sibling of the Spring Boot app, not a Spring resource. It builds
 and deploys independently.
 
-## Current state (as of 2026-08-08, session 17)
+## Current state (as of 2026-08-10, session 18)
 
 Real code exists in `platform/agent`, `platform/llm` (including `LlmResponse`/`CostTracker`, and,
 since session 15, the `llm.complete` tracing span inside `LlmClient` itself), `platform/messaging`
@@ -219,13 +226,14 @@ session 16, the `tool.invoke` tracing span inside `ToolInvoker`), `platform/retr
 `TracingConfig`), and `.github/workflows/ci.yml`. Local Kafka, Postgres, and (since session 17)
 Jaeger all run via `docker-compose.yml` — Kafka carrying four chained consumers
 (classify → retrieve → respond → route) with a single trace id propagated via Kafka headers across
-every hop and every LLM/tool call inside those hops, exported both as log lines and, now, over OTLP
-to the real Jaeger container; Postgres backing both `TicketRepository` (current state) and
-`AuditLog` (immutable event history). `evals/triage/` has 53 real cases (the 50+ target, met session
-13), run via the `eval` Spring profile and gated on four of five configured thresholds. GitHub
-Actions CI runs the 43-test suite on every push/PR — not yet the eval harness itself. Nothing under
-`k8s/` or `frontend/` exists yet — those are still purely descriptions, filled in if/when their
-sessions come up.
+every hop and every LLM/tool call inside those hops, exported both as log lines and over OTLP to the
+real Jaeger container; Postgres backing both `TicketRepository` (current state) and `AuditLog`
+(immutable event history). `evals/triage/` has 53 real cases (the 50+ target, met session 13), run
+via the `eval` Spring profile and gated on four of five configured thresholds; `evals/triage-adversarial/`
+has a separate 20 (session 18), run through the identical pipeline but never gated — tracked, not
+blocking. GitHub Actions CI runs the 48-test suite on every push/PR — not yet the eval harness
+itself. Nothing under `k8s/` or `frontend/` exists yet — those are still purely descriptions, filled
+in if/when their sessions come up.
 
 For the full narrative — what each of these pieces actually does, the
 request lifecycle as it genuinely runs today, and the reasoning behind

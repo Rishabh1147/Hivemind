@@ -1,0 +1,7 @@
+{
+  "id": "multiissue-003",
+  "ticket": "My subscription payment has failed twice this week and I want to understand why before it happens again. Also, totally separate thought, it would be great if you could add a dark mode option to the dashboard at some point.",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-failed-payment"]
+}

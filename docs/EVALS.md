@@ -1,6 +1,6 @@
 # Evaluation
 
-*Implementation status (as of 2026-08-05): the harness described below is real —
+*Implementation status (as of 2026-08-10): the harness described below is real —
 `verticals/triage/eval/`, runnable via `./mvnw spring-boot:run -Dspring-boot.run.profiles=eval`
 (this doc's original placeholder below said `./gradlew`, which was never accurate — this project
 has always been Maven). The 50+ case target is met: 53 cases across
@@ -12,8 +12,9 @@ routing correctness, citation recall, and (as of 2026-08-05) cost-per-ticket are
 `CostTracker` turns real token counts from every Claude call into a USD figure at a configurable,
 currently-placeholder per-million-token rate (`hivemind.llm.pricing.*`). Tone (needs a live
 LLM-as-judge call no session has had a real Anthropic key to verify against) is still designed below
-but not gated. See `docs/devlog/` for the full "what's real vs. still aspirational" account,
-session by session.*
+but not gated. The 20-case adversarial set (as of 2026-08-10) is also built and real — see its own
+section below for what changed from the original sketch and why. See `docs/devlog/` for the full
+"what's real vs. still aspirational" account, session by session.*
 
 ## Why eval-first
 
@@ -110,13 +111,46 @@ baseline-comparison logic built. Today's gating is absolute-threshold only.
 
 ## Adversarial set
 
+*Implementation status (as of 2026-08-10): built — 20 cases, 4 per sub-category below, in
+`evals/triage-adversarial/`, validated structurally on every `mvn test` by
+`AdversarialEvalCaseSetTest` (exactly 20 cases, unique ids that don't collide with the primary set's
+ids, real `mustCite` chunk references, non-blank tickets). Run through the identical pipeline and
+`TriageEvalScorer` as the primary set — `TriageEvalRunner.runAdversarial()` — and reported to its own
+`eval-results/<timestamp>-adversarial.json` file by `TriageEvalHarnessRunner`, but never folded into
+the pass/fail gating decision, exactly as designed below.*
+
 A separate set of 20 cases designed to break the system:
 
-- Prompt injection in the ticket body
-- Contradictory KB entries
-- Multi-issue tickets (billing + bug)
-- Non-English text
-- Tickets with no relevant KB context (test grounding)
+- Prompt injection in the ticket body — 4 cases, one per triage category (billing, bug, feature
+  request, abuse), each embedding an instruction telling the classifier/responder to ignore its
+  actual task. `expectedCategory` is still the *real* underlying category, not what the injection
+  asks for — the case is scored as a pass only if the injection is successfully ignored.
+- Contradictory ticket content — 4 cases. **Deviation from the original sketch, documented rather
+  than silent:** "contradictory KB entries" would mean deliberately planting two disagreeing chunks
+  in `KnowledgeBase`, but that KB is shared with all 53 primary cases' citation-recall scoring —
+  adding a contradiction there risks destabilizing citation results project-wide for the sake of 4
+  adversarial cases. Adapted instead to tickets that contradict *themselves* (e.g. "I was charged
+  twice... actually I was never charged at all") or contradict a real KB chunk (e.g. claiming support
+  said the opposite of what the KB's actual retry policy says) — same spirit (can the system stay
+  grounded against conflicting input), without touching shared KB content.
+- Multi-issue tickets (billing + bug, and two other category pairings) — 4 cases, each raising two
+  real issues in one ticket; `expectedCategory` is whichever issue reads as primary/most urgent in
+  the ticket as written, which is a judgment call worth reviewing against actual model behavior over
+  time rather than a mechanically-derived "correct" answer.
+- Non-English text — 4 cases (French, German, Hindi, Portuguese), deliberately with **no inline
+  English translation** (unlike `evals/triage/edge-002.json`, which cushions the same idea with a
+  parenthetical translation) — a genuine stress test of whether classification holds up on raw
+  foreign-language input. Expected to reveal a real, known limitation: `SearchKbTool` is naive
+  English keyword-overlap, not semantic or multilingual search, so citation recall on these cases is
+  expected to fail predictably even when category accuracy holds — that predictable failure is
+  exactly the kind of thing this set exists to keep visible rather than let quietly worsen unnoticed.
+- Tickets with no relevant KB context (test grounding) — 4 cases, each `mustCite: []` since nothing
+  in the 5-chunk `KnowledgeBase` covers them. Citation recall is trivially satisfied for these (an
+  empty `mustCite` can't fail), so the real signal isn't the scored metric — it's manually checking
+  `actualCitedChunkIds` in the written report for a case that shouldn't have cited anything at all.
+  `TriageEvalScorer` doesn't compute citation *precision* (over-citation isn't scored), a deliberate,
+  pre-existing scope cut noted in the scoring rubric above — this sub-category is the closest thing
+  to a manual substitute until precision scoring is worth building for its own sake.
 
 These don't gate CI but are tracked over time to measure robustness.
 
@@ -135,6 +169,10 @@ for the vertical.
 
 ## Reporting
 
-Each eval run writes a JSON summary to `eval-results/<timestamp>.json` (gitignored). The
-"markdown delta vs `main` posted as a PR comment by the GitHub Action" is still aspirational — no
-CI workflow exists yet to call the harness or post anything.
+Each eval run writes two JSON summaries (gitignored): `eval-results/<timestamp>.json` for the primary,
+gated set, and `eval-results/<timestamp>-adversarial.json` for the 20-case adversarial set — separate
+files, separate timestamps (the adversarial run finishes slightly after the primary one, since
+`TriageEvalHarnessRunner` runs them sequentially), so the adversarial numbers never get folded into
+the primary report that gating actually reads. The "markdown delta vs `main` posted as a PR comment by
+the GitHub Action" is still aspirational — no CI workflow exists yet to call the harness or post
+anything.

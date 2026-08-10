@@ -1,0 +1,7 @@
+{
+  "id": "grounding-002",
+  "ticket": "What is your company's data retention and privacy policy? Our legal team needs to confirm how long you keep customer records before we can sign off on the contract.",
+  "expectedCategory": "OTHER",
+  "expectedRouting": null,
+  "mustCite": []
+}

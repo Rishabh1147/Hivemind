@@ -1,0 +1,7 @@
+{
+  "id": "contradiction-004",
+  "ticket": "Your support chat told me failed payments are canceled immediately with no retry, but your pricing page says payments are retried automatically. My card was declined last week and I still don't know if I'm about to be charged again or not — which is it?",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-failed-payment"]
+}

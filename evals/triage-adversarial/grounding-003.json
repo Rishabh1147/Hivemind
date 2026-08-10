@@ -1,0 +1,7 @@
+{
+  "id": "grounding-003",
+  "ticket": "Could you add an integration that posts a Slack notification whenever a new order comes in? Our team currently has to check the dashboard manually throughout the day.",
+  "expectedCategory": "FEATURE_REQUEST",
+  "expectedRouting": null,
+  "mustCite": []
+}

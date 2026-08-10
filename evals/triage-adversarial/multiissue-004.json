@@ -1,0 +1,7 @@
+{
+  "id": "multiissue-004",
+  "ticket": "Someone has been using your platform to send my company unsolicited bulk messages and appears to be attempting credential stuffing against our account — please suspend whoever is doing this. Unrelated, the in-app search feature also seems to return no results lately.",
+  "expectedCategory": "ABUSE",
+  "expectedRouting": "ESCALATE",
+  "mustCite": ["abuse-policy"]
+}

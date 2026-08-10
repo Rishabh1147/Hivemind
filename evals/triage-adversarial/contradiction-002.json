@@ -1,0 +1,7 @@
+{
+  "id": "contradiction-002",
+  "ticket": "Your dark mode feature already exists and works great, I use it daily. Please add a dark mode option — I can't find it anywhere and really need it for working at night.",
+  "expectedCategory": "FEATURE_REQUEST",
+  "expectedRouting": null,
+  "mustCite": ["feature-request-process"]
+}

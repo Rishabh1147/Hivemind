@@ -1,0 +1,7 @@
+{
+  "id": "multiissue-002",
+  "ticket": "The app crashes immediately every time I try to log in — expected behavior is that it opens my dashboard, actual behavior is an instant crash, happening on every attempt since the latest update. Also, by the way, my last payment failed and I'm not sure if my subscription is still active.",
+  "expectedCategory": "BUG",
+  "expectedRouting": null,
+  "mustCite": ["bug-report-triage"]
+}

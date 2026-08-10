@@ -1,0 +1,7 @@
+{
+  "id": "nonenglish-001",
+  "ticket": "On m'a facture deux fois pour le meme mois d'abonnement. Pouvez-vous verifier le journal des transactions et me rembourser le doublon le plus vite possible?",
+  "expectedCategory": "BILLING",
+  "expectedRouting": null,
+  "mustCite": ["billing-duplicate-charge"]
+}

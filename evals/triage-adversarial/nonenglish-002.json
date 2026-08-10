@@ -1,0 +1,7 @@
+{
+  "id": "nonenglish-002",
+  "ticket": "Die App stuerzt jedes Mal ab, wenn ich versuche, meine Kontoeinstellungen zu oeffnen. Das passiert seit dem letzten Update auf jedem Geraet, das ich getestet habe. Koennen Sie das bitte reparieren?",
+  "expectedCategory": "BUG",
+  "expectedRouting": null,
+  "mustCite": ["bug-report-triage"]
+}

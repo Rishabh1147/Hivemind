@@ -89,8 +89,13 @@ pipeline and scores:
 
 Four of these five are gated with a real process exit code
 (`./mvnw spring-boot:run -Dspring-boot.run.profiles=eval`) — tone (LLM-as-judge) is designed but not
-yet scored. **This gate runs locally, not in CI yet** — GitHub Actions currently runs the unit/
-integration test suite only; wiring the eval harness into CI needs a real `ANTHROPIC_API_KEY` as a
+yet scored. The same run also scores a separate, 20-case **adversarial set**
+(`evals/triage-adversarial/` — prompt injection, contradictory ticket content, multi-issue tickets,
+non-English text, no-relevant-KB-context grounding checks) through the identical pipeline, written to
+its own report file but never gated — it's designed to surface known weaknesses and get tracked over
+time, not to pass 100% of the time. **This gate runs locally, not in CI yet** — GitHub Actions
+currently runs the unit/ integration test suite only; wiring the eval harness into CI needs a real
+`ANTHROPIC_API_KEY` as a
 GitHub secret and real spend per push, a deliberate tradeoff not yet made. See
 [`docs/EVALS.md`](docs/EVALS.md) for the full scoring rubric and reasoning.
 
@@ -144,6 +149,7 @@ for the package layout, file by file, built vs. planned.
 - [x] Postgres persistence — ticket state + immutable audit log (the event log doubles as the audit log)
 - [x] Tool registry + first real tool (`searchKb`), timeout/retry/virtual-thread sandboxing
 - [x] Eval harness — 53 cases (50+ target met), gated on category accuracy / citation recall / p95 latency / cost-per-ticket
+- [x] Adversarial eval set — 20 cases (injection, contradiction, multi-issue, non-English, grounding), tracked but not gated
 - [x] GitHub Actions CI — full test suite on every push/PR
 - [x] Distributed tracing — one trace id across the HTTP request, every Kafka hop, every LLM call
       (`llm.model`/`llm.cost_usd`/token-count tags), and every tool call (`tool.name`/`tool.success`/
@@ -174,7 +180,7 @@ for real classify/respond calls to succeed — the app boots and the test suite 
 
 ```bash
 docker compose up -d          # Kafka (KRaft) + Postgres + Jaeger
-./mvnw test                   # 43 tests — Testcontainers spins up its own Kafka/Postgres, no external services needed
+./mvnw test                   # 48 tests — Testcontainers spins up its own Kafka/Postgres, no external services needed
 ANTHROPIC_API_KEY=sk-... ./mvnw spring-boot:run
 
 curl -X POST localhost:8080/api/v1/triage/tickets \

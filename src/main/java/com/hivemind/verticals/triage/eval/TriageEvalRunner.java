@@ -29,13 +29,21 @@ import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 /**
- * Runs every {@link TriageEvalCase} under {@code <cases-dir>/triage/} through the classify →
- * retrieve → respond → route chain and scores the result. Deliberately calls the four agents
- * directly and sequentially — the same agents the Kafka consumers call, just not through Kafka —
- * rather than submitting each case as a real ticket and polling. Evals are a batch quality-scoring
- * loop over model decisions, not a re-verification of the event-bus plumbing that
+ * Runs every {@link TriageEvalCase} under a cases directory through the classify → retrieve →
+ * respond → route chain and scores the result. Deliberately calls the four agents directly and
+ * sequentially — the same agents the Kafka consumers call, just not through Kafka — rather than
+ * submitting each case as a real ticket and polling. Evals are a batch quality-scoring loop over
+ * model decisions, not a re-verification of the event-bus plumbing that
  * {@code TriageKafkaIntegrationTest} already covers; going through Kafka for 50+ cases would add
  * async polling latency and flakiness to a job that should be fast and repeatable.
+ *
+ * <p>{@link #run()} scores the primary, CI-gated case set under {@code <cases-dir>/triage/}.
+ * {@link #runAdversarial()} (added for the 20-case set {@code docs/EVALS.md} describes) scores the
+ * separate, deliberately-not-gated set under {@code <cases-dir>/triage-adversarial/} through the
+ * identical pipeline and scorer — same mechanics, different intent: these cases are expected to
+ * surface real, tracked-over-time weaknesses (e.g. citation recall predictably failing on
+ * non-English tickets, since retrieval is naive English keyword-overlap, not semantic search) rather
+ * than to pass 100% of the time.
  */
 @Component
 public class TriageEvalRunner {
@@ -47,7 +55,8 @@ public class TriageEvalRunner {
     private final ResponderAgent responderAgent;
     private final RoutingAgent routingAgent;
     private final ObjectMapper objectMapper;
-    private final Path casesDir;
+    private final Path primaryCasesDir;
+    private final Path adversarialCasesDir;
 
     public TriageEvalRunner(
             ClassifierAgent classifierAgent,
@@ -61,11 +70,20 @@ public class TriageEvalRunner {
         this.responderAgent = responderAgent;
         this.routingAgent = routingAgent;
         this.objectMapper = objectMapper;
-        this.casesDir = Path.of(casesDir, "triage");
+        this.primaryCasesDir = Path.of(casesDir, "triage");
+        this.adversarialCasesDir = Path.of(casesDir, "triage-adversarial");
     }
 
     public TriageEvalReport run() {
-        List<TriageEvalCase> cases = loadCases();
+        return runDirectory(primaryCasesDir);
+    }
+
+    public TriageEvalReport runAdversarial() {
+        return runDirectory(adversarialCasesDir);
+    }
+
+    private TriageEvalReport runDirectory(Path dir) {
+        List<TriageEvalCase> cases = loadCases(dir);
         List<TriageEvalResult> results = new ArrayList<>();
         for (TriageEvalCase evalCase : cases) {
             results.add(runOne(evalCase));
@@ -73,19 +91,19 @@ public class TriageEvalRunner {
         return aggregate(results);
     }
 
-    private List<TriageEvalCase> loadCases() {
-        if (!Files.isDirectory(casesDir)) {
-            log.warn("Eval cases directory {} does not exist — running with zero cases", casesDir);
+    private List<TriageEvalCase> loadCases(Path dir) {
+        if (!Files.isDirectory(dir)) {
+            log.warn("Eval cases directory {} does not exist — running with zero cases", dir);
             return List.of();
         }
-        try (Stream<Path> files = Files.list(casesDir)) {
+        try (Stream<Path> files = Files.list(dir)) {
             List<TriageEvalCase> cases = new ArrayList<>();
             for (Path file : files.filter(p -> p.toString().endsWith(".json")).sorted().toList()) {
                 cases.add(objectMapper.readValue(file.toFile(), TriageEvalCase.class));
             }
             return cases;
         } catch (IOException e) {
-            throw new IllegalStateException("Failed to load eval cases from " + casesDir, e);
+            throw new IllegalStateException("Failed to load eval cases from " + dir, e);
         }
     }
 

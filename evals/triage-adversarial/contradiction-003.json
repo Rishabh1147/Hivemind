@@ -1,0 +1,7 @@
+{
+  "id": "contradiction-003",
+  "ticket": "This crash happens literally every single time I open the app, without fail. Although actually now that I think about it, it only happened once and I haven't been able to reproduce it since. Environment: Android 14, app version 3.2.1. Expected: app opens normally. Actual: app closes immediately.",
+  "expectedCategory": "BUG",
+  "expectedRouting": null,
+  "mustCite": ["bug-report-triage"]
+}
