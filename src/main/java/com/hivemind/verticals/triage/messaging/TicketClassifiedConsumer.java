@@ -69,8 +69,8 @@ public class TicketClassifiedConsumer extends EventConsumer<TicketClassified> {
         AgentResult<List<KbChunk>> result = retrieverAgent.handle(context);
 
         TicketRetrieved retrieved = result.success()
-                ? new TicketRetrieved(event.ticketId(), event.ticketBody(), "retrieved", result.payload(), null)
-                : new TicketRetrieved(event.ticketId(), event.ticketBody(), "retrieval_failed", List.of(), result.errorMessage());
+                ? new TicketRetrieved(event.ticketId(), event.ticketBody(), "retrieved", result.payload(), event.nextStep(), null)
+                : new TicketRetrieved(event.ticketId(), event.ticketBody(), "retrieval_failed", List.of(), event.nextStep(), result.errorMessage());
 
         eventBus.publish(TriageTopics.RETRIEVED, event.ticketId(), retrieved);
     }

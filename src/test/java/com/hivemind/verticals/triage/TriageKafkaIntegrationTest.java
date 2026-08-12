@@ -12,6 +12,7 @@ import com.hivemind.verticals.triage.messaging.TriageTopics;
 import com.hivemind.verticals.triage.model.Category;
 import com.hivemind.verticals.triage.model.Classification;
 import com.hivemind.verticals.triage.model.DraftResponse;
+import com.hivemind.verticals.triage.model.PlanDecision;
 import com.hivemind.verticals.triage.model.RoutingDecision;
 import com.hivemind.verticals.triage.model.Ticket;
 import com.hivemind.verticals.triage.model.TriageResponse;
@@ -42,6 +43,8 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -152,6 +155,57 @@ class TriageKafkaIntegrationTest extends AbstractPostgresIntegrationTest {
         Integer auditEventCount = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM audit_events WHERE entity_id = ?", Integer.class, pending.id());
         assertThat(auditEventCount).isEqualTo(5);
+    }
+
+    /**
+     * Same real-Kafka shape as the test above, but for the branch {@code PlannerAgent} added
+     * (session 20): an {@code ABUSE} classification should make {@code TicketRetrievedConsumer}
+     * skip {@code ResponderAgent} entirely rather than draft a reply nothing downstream reads.
+     * {@code verify(responderAgent, never())} is the assertion that actually matters here — the
+     * final routed state alone (ESCALATE) can't distinguish "skipped as designed" from "drafted a
+     * response and escalated anyway," since {@code RoutingAgent} escalates every {@code ABUSE}
+     * ticket unconditionally either way.
+     */
+    @Test
+    void skipsResponseDraftingForAbuseTicketsButStillCitesAndEscalates() throws InterruptedException {
+        when(classifierAgent.handle(any()))
+                .thenReturn(AgentResult.success(new Classification(Category.ABUSE, 0.99)));
+
+        ResponseEntity<TriageResponse> postResponse = restTemplate.postForEntity(
+                url("/api/v1/triage/tickets"),
+                new Ticket("Multiple accounts are sending unsolicited bulk messages and attempting credential stuffing"),
+                TriageResponse.class);
+
+        assertThat(postResponse.getStatusCode().value()).isEqualTo(202);
+        TriageResponse pending = postResponse.getBody();
+        assertThat(pending).isNotNull();
+
+        TicketRetrieved retrieved = readNextEvent(TriageTopics.RETRIEVED, TicketRetrieved.class);
+        assertThat(retrieved.nextStep()).isEqualTo(PlanDecision.SKIP_RESPONSE);
+        assertThat(retrieved.chunks()).extracting("id").contains("abuse-policy");
+
+        TicketResponded respondedEvent = readNextEvent(TriageTopics.RESPONDED, TicketResponded.class);
+        assertThat(respondedEvent.status()).isEqualTo("response_skipped");
+        assertThat(respondedEvent.answer()).isNull();
+        assertThat(respondedEvent.citedChunkIds()).contains("abuse-policy");
+
+        TriageResponse routed = pollUntilStatus(pending.id(), "routed");
+        assertThat(routed.category()).isEqualTo(Category.ABUSE);
+        assertThat(routed.answer()).isNull();
+        assertThat(routed.citedChunkIds()).contains("abuse-policy");
+        assertThat(routed.routingDecision()).isEqualTo(RoutingDecision.ESCALATE);
+
+        // Both tests in this class read hivemind.triage.routed through the same deterministic
+        // "test-<topic>-reader" consumer group (see readNextEvent) — draining it here, exactly like
+        // the test above does, is what keeps that shared group's offset from leaking an uncommitted
+        // record into whichever test reads this topic next.
+        TicketRouted routedEvent = readNextEvent(TriageTopics.ROUTED, TicketRouted.class);
+        assertThat(routedEvent.status()).isEqualTo("routed");
+        assertThat(routedEvent.routingDecision()).isEqualTo(RoutingDecision.ESCALATE);
+
+        // The assertion the rest of this test exists to set up: ResponderAgent — a real Claude call
+        // in production — was never invoked for this ticket.
+        verify(responderAgent, never()).handle(any());
     }
 
     private <T> T readNextEvent(String topic, Class<T> eventType) {

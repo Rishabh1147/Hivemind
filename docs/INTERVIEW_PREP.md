@@ -25,66 +25,134 @@ a single-process graph library.
 
 **Q: What's actually built vs. what's still just documented/planned?**
 Be precise here — this is a portfolio project and overclaiming is the fastest way to lose
-credibility in an interview. As of 2026-08-05: four agents (`ClassifierAgent`, `RetrieverAgent`,
-`ResponderAgent`, `RoutingAgent`) genuinely chained through Kafka — classify → retrieve → respond →
-route — with `GET /tickets/{id}` reaching a final routing decision, both ticket state and the full
-event history persisted in real Postgres (`TicketRepository`, `AuditLog`), and an eval harness
-(`verticals/triage/eval/`) that runs 53 hand-written cases (the 50+ target, hit session 13) and
-gates on category accuracy / citation recall / p95 latency / cost-per-ticket (session 14, real
-`TokenUsage`-derived cost via `CostTracker`) with a real process exit code, plus a separate 20-case
-adversarial set (session 18) run through the identical pipeline but never gated. GitHub Actions CI
-(session 11) runs the 48-test suite on every push/PR. Distributed tracing (session 12) follows one
-trace id across the HTTP request, every Kafka hop, every LLM call (session 15), and every tool call
-(session 16) — every span type `ARCHITECTURE.md` names is real now — exported both as log lines and,
-as of session 17, to a real Jaeger backend over OTLP (queryable through Jaeger's own UI/API, not just
-grepped log lines). The full `ARCHITECTURE.md` pipeline is real except the `Stream` step (SSE to a
-dashboard that doesn't exist). Still not built: a planner that *decides* the chain dynamically (it's
-four hardcoded consumer→topic links, not planner-routed), pgvector-backed KB persistence
+credibility in an interview. As of 2026-08-05: five agents (`ClassifierAgent`, `PlannerAgent`,
+`RetrieverAgent`, `ResponderAgent`, `RoutingAgent`) genuinely chained through Kafka — classify →
+(plan) → retrieve → respond → route — with `GET /tickets/{id}` reaching a final routing decision,
+both ticket state and the full event history persisted in real Postgres (`TicketRepository`,
+`AuditLog`), and an eval harness (`verticals/triage/eval/`) that runs 53 hand-written cases (the 50+
+target, hit session 13) and gates on category accuracy / citation recall / p95 latency / cost-per-ticket
+(session 14, real `TokenUsage`-derived cost via `CostTracker`) with a real process exit code, plus a
+separate 20-case adversarial set (session 18) run through the identical pipeline but never gated.
+GitHub Actions CI (session 11) runs the 51-test suite on every push/PR. Distributed tracing (session 12)
+follows one trace id across the HTTP request, every Kafka hop, every LLM call (session 15), and every
+tool call (session 16) — every span type `ARCHITECTURE.md` names is real now — exported both as log
+lines and, as of session 17, to a real Jaeger backend over OTLP (queryable through Jaeger's own UI/API,
+not just grepped log lines). The full `ARCHITECTURE.md` pipeline is real except the `Stream` step (SSE
+to a dashboard that doesn't exist) and full ingest-time planner dispatch (see below). Session 19 added
+a `--case=<id>` filter and switched the eval harness's default model to Haiku 4.5, with real verified
+pricing replacing the old placeholder rates — both a cost-control move for this being an
+individual-not-org budget, and, as a side effect, finally resolving the "pricing is a placeholder"
+gap noted in every session before it. Session 20 shipped `PlannerAgent` — the pipeline's first real
+branching decision: an `ABUSE` classification skips `ResponderAgent`'s Claude call entirely (retrieval
+still runs, so the citation trail survives), verified over real Kafka including a `verify(...,
+never())` assertion that the Claude call genuinely didn't happen. It's a first real slice, not the
+full vision — it doesn't decide retrieval, doesn't reorder stages, and doesn't run at ingest, so "four
+hardcoded Kafka hops" is now accurate for every category except `ABUSE`, not for all of them. Still
+not built: the *full* dynamic planner described just above, pgvector-backed KB persistence
 (`KnowledgeBase` is still 5 hardcoded chunks), the eval harness's tone scoring (the one threshold
-still ungated — needs a live LLM-as-judge call), CI gating on the eval harness itself (cost/secrets
-tradeoff, deliberate), `llm.vertical`/`tool.vertical` span tags, `CostTracker`'s pricing rates being
-real verified numbers rather than placeholders, frontend. Check `docs/devlog/` for the current honest
-state before claiming anything more specific.
+still ungated — needs a live LLM-as-judge call, though a key is expected soon), CI gating on the eval
+harness itself (cost/secrets tradeoff, deliberate), `llm.vertical`/`tool.vertical` span tags, frontend.
+Check `docs/devlog/` for the current honest state before claiming anything more specific.
 
 ## LLM / agent orchestration
 
 **Q: Walk me through what happens when a ticket comes in, today.**
 `POST /api/v1/triage/tickets` → `TriageController` generates a ticket ID, writes a `pending`
-`TriageResponse` into `TicketStatusStore`, publishes a `ClassifyRequested` event to
+`TriageResponse` into `TicketRepository` (real Postgres, since session 9 — not the older
+`TicketStatusStore` this pipeline started with), publishes a `ClassifyRequested` event to
 `hivemind.triage.classify` via `EventBus`, and returns immediately with `202 Accepted` — the
 request thread never waits on Claude. Separately, `ClassifyRequestConsumer` (`@KafkaListener` on
 that topic) picks up the event, builds an `AgentContext`, hands it to `ClassifierAgent.handle()` —
 which sends the ticket body to Claude via `LlmClient` with a system prompt demanding strict JSON,
 parses the response into a `Category` + confidence with Jackson, and returns an `AgentResult`
-(success/payload or failure/error message). The consumer turns that into a `TriageResponse`,
-publishes a `TicketClassified` event (which carries the ticket body — `TriageResponse` doesn't) to
-`hivemind.triage.classified`, and writes a `TriageResponse` into `TicketStatusStore`. The client
-polls `GET /api/v1/triage/tickets/{id}` to see the result — `pending` until the consumer catches up,
-then `classified` or `classification_failed`.
+(success/payload or failure/error message). On success, this same consumer also calls
+`PlannerAgent.handle()` (session 20) with that `Classification` — a deterministic, no-LLM-call
+decision on whether the pipeline should draft a response at all (`ABUSE` → skip). The consumer turns
+the classify result into a `TriageResponse`, publishes a `TicketClassified` event (which carries the
+ticket body — `TriageResponse` doesn't — plus `PlannerAgent`'s decision as `nextStep`) to
+`hivemind.triage.classified`, and writes a `TriageResponse` into `TicketRepository`. The client polls
+`GET /api/v1/triage/tickets/{id}` to see the result — `pending` until the consumer catches up, then
+`classified` or `classification_failed`.
 
 Separately again, `TicketClassifiedConsumer` picks up that same `TicketClassified` event. If
 classification failed it stops there — nothing to search for. Otherwise it hands the ticket body to
 `RetrieverAgent`, which looks up `searchKb` from `ToolRegistry` and calls it through `ToolInvoker`;
-the resulting chunks get published as a `TicketRetrieved` event (carrying the ticket body forward
-again) to `hivemind.triage.retrieved`. This stage still doesn't touch `TicketStatusStore` —
-retrieval alone isn't a result worth surfacing.
+the resulting chunks get published as a `TicketRetrieved` event (carrying the ticket body *and*
+`nextStep` forward again, unchanged from what `PlannerAgent` decided) to `hivemind.triage.retrieved`.
+This stage still doesn't touch `TicketRepository` — retrieval alone isn't a result worth surfacing.
+Retrieval itself is never gated by the plan decision — grounding stays on record even for a ticket
+that won't get a drafted reply, which is what lets an `ABUSE` ticket still cite `abuse-policy`.
 
-One more time, `TicketRetrievedConsumer` picks up that event. If retrieval failed it stops. Otherwise
+One more time, `TicketRetrievedConsumer` picks up that event. If retrieval failed it stops. If
+`nextStep` is `PlanDecision.SKIP_RESPONSE`, it skips `ResponderAgent` entirely — no Claude call — and
+publishes a `TicketResponded` event with `status="response_skipped"`, `answer=null`, and
+`citedChunkIds` taken directly from what was retrieved (not LLM-filtered, since no LLM ran). Otherwise
 it hands the ticket body and chunks to `ResponderAgent`, which drafts an answer via Claude (same
-strict-JSON-prompt approach as the classifier). This consumer *does* write into `TicketStatusStore`
-— it reads the ticket's current `TriageResponse` (still carrying `category`/`confidence` from the
-classify stage) and calls `.withResponse(draft)` on it, an instance method that preserves those
-fields while updating `status`/`answer`/`citedChunkIds`, rather than building a fresh record that
-would lose them. It also publishes a `TicketResponded` event to `hivemind.triage.responded`.
+strict-JSON-prompt approach as the classifier). Either way this consumer *does* write into
+`TicketRepository` — it reads the ticket's current `TriageResponse` (still carrying
+`category`/`confidence` from the classify stage) and calls `.withResponse(draft)` or
+`.withResponseSkipped(citedChunkIds)` on it, instance methods that preserve those fields while
+updating `status`/`answer`/`citedChunkIds`, rather than building a fresh record that would lose them.
+It also publishes a `TicketResponded` event to `hivemind.triage.responded`.
 
 Finally, `TicketRespondedConsumer` picks that up and hands the ticket's *whole current*
 `TriageResponse` to `RoutingAgent` — unlike every earlier consumer, it does not skip on failure:
 even a `response_failed` ticket gets routed (to `ESCALATE`), since that's exactly the ticket that
 most needs a human to see it. `RoutingAgent` is the one agent that never calls Claude — auto-resolve
-vs. queue vs. escalate is a deterministic function of category, confidence, and status. The consumer
-writes the decision into `TicketStatusStore` and publishes a final `TicketRouted` event.
+vs. queue vs. escalate is a deterministic function of category, confidence, and status; it escalates
+`ABUSE` unconditionally regardless of `status`, which is exactly why `response_skipped` reaches the
+identical routing outcome `responded` would have — `PlannerAgent`'s decision changes *how much work*
+the pipeline does, not the final routing outcome, for the one case it currently applies to. The
+consumer writes the decision into `TicketRepository` and publishes a final `TicketRouted` event.
 `GET /tickets/{id}` now reaches the pipeline's true terminal state: `routed`, with a `routingDecision`
 alongside everything the earlier stages produced.
+
+**Q: Is `PlannerAgent` "the dynamic planner" this project's roadmap has been promising since session
+12?**
+Not the full thing, and worth being precise about that rather than overclaiming it. The original
+vision (`ARCHITECTURE.md`'s step 2) is a planner deciding which sub-agents to invoke *at ingest*,
+before classification even runs — that still doesn't exist; `TriageController` still publishes
+directly to `hivemind.triage.classify` exactly like before. What `PlannerAgent` actually does is
+narrower and sits one stage later: after classification, it decides one thing — whether to draft a
+response at all. It's a first real slice of "the pipeline branches on a decision" rather than "four
+hardcoded hops," not the destination. Every category except `ABUSE` still takes all four hops
+unchanged.
+
+**Q: Why is `PlannerAgent` deterministic instead of an LLM call?**
+Same reasoning `RoutingAgent` already established for the final routing decision, applied one stage
+earlier: whether to draft a response is a pure function of one known value (the classified category),
+and spending latency, cost, and non-determinism on an LLM call to make that decision would be the
+wrong trade. It's also the only way this was fully verifiable this session — no live Anthropic key
+has been available with a funded balance, so a planner that itself needed a Claude call to decide
+would have hit the exact same "can't observe a real success" wall every other feature this project
+has run into. `PlannerAgent.handle()` is pure logic, unit-tested with zero mocks (`PlannerAgentTest`).
+
+**Q: If `PlannerAgent` skips drafting a response for `ABUSE` tickets, why does `RetrieverAgent` still
+run? Isn't that wasted work too?**
+No — retrieval is cheap (naive keyword-overlap over 5 in-memory chunks, no LLM call, no real cost)
+and its output still matters: `TicketRetrievedConsumer` uses the retrieved chunk ids as
+`citedChunkIds` even when nothing gets drafted, so an `ABUSE` ticket still shows which policy chunk
+it matched (`abuse-policy`) for audit purposes — only the customer-facing Claude-drafted reply is
+what's actually skipped. This does trade citation *precision* for *recall*: instead of Claude judging
+which retrieved chunks are actually worth citing, every retrieved chunk becomes a citation. Called
+out directly in `PlannerAgent`'s own Javadoc rather than left as a silent side effect — though it
+doesn't change what's actually scored, since `docs/EVALS.md` already documented citation precision as
+an unbuilt, deliberately deferred metric before this session.
+
+**Q: How was the skip-response behavior actually verified — how do you know `ResponderAgent` really
+didn't get called, rather than getting called and just not affecting the end state?**
+This mattered enough to build a dedicated check for, because the failure mode "escalates either way,
+so a bug that always drafts a response would look identical from the outside" is real —
+`RoutingAgent` escalates every `ABUSE` ticket unconditionally regardless of what got drafted, so the
+final routing decision alone can't prove the skip happened. Two layers of proof: (1) a new
+Testcontainers integration test (`TriageKafkaIntegrationTest.skipsResponseDraftingForAbuseTickets...`)
+asserts `verify(responderAgent, never()).handle(any())` over a real Kafka broker — a Mockito
+assertion that the method was never invoked, not an inference from output; (2) manual verification
+against the real running app produced a directly comparable pair of traces: hand-publishing an
+`ABUSE`-classified event produced a Kafka span sequence with **no `llm.complete` span anywhere in it**,
+while hand-publishing an otherwise-identical `BILLING`-classified event produced the usual
+`llm.complete` span (failing on the dummy key, same as always, but genuinely attempted). The absence
+of a span is the evidence, not a status field that could theoretically be wrong.
 
 **Q: Why wrap LangChain4j's `ChatModel` in your own `LlmClient` instead of injecting it directly
 into agents?**
@@ -206,15 +274,20 @@ This is the same "extend additively, don't force every call site to change" inst
 elsewhere in this codebase (e.g. `TriageResponse`'s `with*` methods) — a shared record gaining a new
 concern doesn't have to mean every existing caller needs to understand that concern.
 
-**Q: `hivemind.llm.pricing.input-cost-per-million-tokens` is set to `3.00` — is that Claude's real
+**Q: `hivemind.llm.pricing.input-cost-per-million-tokens` is set to `1.00` — is that Claude's real
 price?**
-No, and saying it is would be the wrong answer. It's an explicitly-labeled placeholder — commented as
-such in `application.yml` and in `CostTracker`'s Javadoc — because there's no verified, current
-published rate for `hivemind.llm.model` to point at with confidence. The honest framing: the
-*mechanism* is real (real token counts, extracted correctly, turned into a real formula, gating a
-real CI-usable threshold) and that's what's actually being demonstrated; the specific dollar-per-token
-rate is a config value anyone operating this for real would replace with the actual published price
-in about one minute, not a hardcoded assumption baked into the logic.
+As of session 19, yes — it's real, verified Claude Haiku 4.5 pricing ($1/$5 per million input/output
+tokens, checked directly against `anthropic.com/claude/haiku`), matching `hivemind.llm.model`'s
+default of Haiku 4.5. Through session 18 the honest answer here was "no, it's an explicitly-labeled
+placeholder" — the *mechanism* (real token counts, a real formula, a real CI-usable threshold) was
+what was actually being demonstrated, not a specific dollar figure nobody had verified. It became a
+real number for a mundane reason, not a dedicated pricing-verification effort: session 19 switched
+the default model to Haiku for cost control during dev (an individual-budget project, not an
+org-funded one), and checking Haiku's real published rate while doing that was strictly less work
+than leaving a stale, now-wrong placeholder in place. Worth remembering the coupling this creates:
+`hivemind.llm.model` and `hivemind.llm.pricing.*` aren't linked in code — switching the model back to
+Sonnet for a demo run without also updating the pricing rates would silently produce a wrong
+`llm.cost_usd`/`avgCostUsd` figure for whatever model is actually running.
 
 ## Kafka / eventing
 
@@ -609,7 +682,7 @@ failed-payment retry policy) — same underlying question (does the system stay 
 input conflicts with itself or with ground truth), without touching shared production KB content to
 get there.
 
-**Q: Why does `TriageEvalRunner` call the four agents directly instead of submitting each eval
+**Q: Why does `TriageEvalRunner` call the agents directly instead of submitting each eval
 case as a real ticket through the API and Kafka, the way the app actually runs in production?**
 Because an eval run and a production request are answering different questions. A production
 ticket needs replay, independent scaling, and an audit trail — Kafka earns its cost there. An eval
@@ -683,11 +756,27 @@ workflow (session 11) actually run it?**
 Cost and secrets, weighed honestly rather than defaulted past — and, as of session 13, no longer a
 question of the eval set being too small either (it hit the 50+ target). Running the eval harness
 means real Claude API calls — a live `ANTHROPIC_API_KEY` would have to sit in GitHub Actions secrets,
-and every push/PR would burn real money, regardless of how many cases exist. `./mvnw test` (48 tests
+and every push/PR would burn real money, regardless of how many cases exist. `./mvnw test` (51 tests
 today) needs neither: Testcontainers spins up its own Postgres and Kafka per test class, so the whole
 suite is self-contained and free to run on every push. The eval harness stays a deliberate,
 local/manual gate for now — the honest state is "CI-gated on tests, not yet on evals," not "CI-gated"
 unqualified. Revisit once the interview story around cost justifies the spend.
+
+**Q: The eval harness makes real Claude calls — how do you keep that from being expensive during
+day-to-day development?**
+Three things, all session 19. First, `hivemind.llm.model` defaults to Claude Haiku 4.5 instead of
+Sonnet (`${HIVEMIND_LLM_MODEL:claude-haiku-4-5-20251001}` in `application.yml`) — cheap and fully
+capable of exercising the pipeline/eval mechanics; override to Sonnet via the same env var only when
+response *quality* is actually what's being judged. Second, `TriageEvalHarnessRunner` now accepts a
+`--case=<id>[,<id>...]` program argument (`-Dspring-boot.run.arguments=--case=billing-001`) that
+restricts a run to just the listed case ids across both the primary and adversarial directories — the
+flag `docs/EVALS.md` had described since before the adversarial set even existed, finally built.
+Third, and simplest: the full 73-case run was never actually expensive to begin with — at Haiku
+pricing it's well under $1 total, so the filter's real value is iteration speed (a 1-2 case sanity
+check finishes in seconds) more than it is meaningful cost avoidance at this project's scale. Verified
+end to end with a dummy key: `--case=billing-001,abuse-001` produced a report with exactly 2 cases (0
+in the adversarial report, since neither id exists there), and the real `llm.complete` tracing span
+confirmed `llm.model="claude-haiku-4-5-20251001"` actually reached the wire, not just the config file.
 
 **Q: Why is `./mvnw test` alone sufficient as the whole CI command — no separate integration-test
 phase?**

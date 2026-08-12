@@ -13,6 +13,8 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Entry point for {@code ./mvnw spring-boot:run -Dspring-boot.run.profiles=eval} — runs
@@ -28,10 +30,16 @@ import java.nio.file.Path;
  * LLM-as-judge call no session yet has had a live Anthropic key to verify against, so it stays
  * configured but explicitly not gated on, rather than gated on a number that was never measured.
  *
- * <p>Also runs {@link TriageEvalRunner#runAdversarial()} — the 20-case set {@code docs/EVALS.md}
+ * <p>Also runs {@link TriageEvalRunner#runAdversarial} — the 20-case set {@code docs/EVALS.md}
  * describes — and writes its own report file, but never folds it into the pass/fail decision above:
  * that set is deliberately designed to surface known weaknesses (prompt injection, non-English
  * grounding, and so on) and is tracked over time, not gated, per {@code docs/EVALS.md}.
+ *
+ * <p>Accepts an optional {@code --case=<id>[,<id>...]} program argument (repeatable, and each value
+ * may itself be comma-separated) that restricts both runs above to just those case ids — the flag
+ * {@code docs/EVALS.md} named before it existed. Every case run here is a real Claude call; this is
+ * what makes "does the wiring still work" a one- or two-case, sub-cent check instead of a run across
+ * the full 73-case set every time.
  */
 @Component
 @Profile("eval")
@@ -66,7 +74,13 @@ public class TriageEvalHarnessRunner implements CommandLineRunner {
 
     @Override
     public void run(String... args) throws Exception {
-        TriageEvalReport report = evalRunner.run();
+        Set<String> caseIdFilter = parseCaseIdFilter(args);
+        if (!caseIdFilter.isEmpty()) {
+            log.info("Running eval harness restricted to --case filter: {} (real Claude spend limited to just these ids)",
+                    caseIdFilter);
+        }
+
+        TriageEvalReport report = evalRunner.run(caseIdFilter);
         writeReport(report, "");
 
         log.info(
@@ -90,7 +104,7 @@ public class TriageEvalHarnessRunner implements CommandLineRunner {
             log.info("Eval run PASSED all gating thresholds");
         }
 
-        TriageEvalReport adversarialReport = evalRunner.runAdversarial();
+        TriageEvalReport adversarialReport = evalRunner.runAdversarial(caseIdFilter);
         writeReport(adversarialReport, "-adversarial");
         log.info(
                 "Adversarial eval run complete (not gated, tracked only): {} cases ({} errored), category "
@@ -104,6 +118,21 @@ public class TriageEvalHarnessRunner implements CommandLineRunner {
         // Only the primary report's `passed` result decides this — the adversarial run above never
         // affects the exit code, per docs/EVALS.md ("these don't gate CI but are tracked over time").
         System.exit(SpringApplication.exit(applicationContext, () -> passed ? 0 : 1));
+    }
+
+    private Set<String> parseCaseIdFilter(String[] args) {
+        Set<String> caseIdFilter = new HashSet<>();
+        for (String arg : args) {
+            if (!arg.startsWith("--case=")) {
+                continue;
+            }
+            for (String id : arg.substring("--case=".length()).split(",")) {
+                if (!id.isBlank()) {
+                    caseIdFilter.add(id.trim());
+                }
+            }
+        }
+        return caseIdFilter;
     }
 
     private void writeReport(TriageEvalReport report, String suffix) throws IOException {

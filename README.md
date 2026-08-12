@@ -50,10 +50,14 @@ POST /tickets  ──▶  ClassifierAgent  ──▶  RetrieverAgent  ──▶ 
 
 The API is asynchronous by design — `POST` doesn't wait for classification, it publishes an event
 and returns immediately; `GET /api/v1/triage/tickets/{id}` reads whatever stage the ticket has
-reached from Postgres. There's no planner deciding this chain dynamically yet: it's four fixed
-Kafka hops. See [`OVERVIEW.md`](OVERVIEW.md) (gitignored, personal) or
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full walkthrough and the reasoning behind
-every design choice.
+reached from Postgres. A real `PlannerAgent` (session 20) sits between classify and respond and
+decides one thing: whether the ticket gets a drafted response at all — an `ABUSE` classification
+skips `ResponderAgent`'s Claude call entirely, since `RoutingAgent` escalates every `ABUSE` ticket
+regardless of what got drafted, while retrieval still runs so the citation trail survives. It's a
+first real branching decision, not a full dynamic planner: it doesn't decide retrieval, doesn't
+reorder stages, and doesn't run at ingest — everything except `ABUSE` still takes all four hops. See
+[`OVERVIEW.md`](OVERVIEW.md) (gitignored, personal) or [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+for the full walkthrough and the reasoning behind every design choice.
 
 ## Tech stack
 
@@ -62,12 +66,12 @@ every design choice.
 | Language | **Java 21** | ✅ records, virtual threads, text blocks in active use |
 | Framework | **Spring Boot 3.3.5** | ✅ |
 | LLM SDK | **LangChain4j 1.17.2** | ✅ client layer only — Kafka does orchestration, not LangChain4j |
-| LLM | **Anthropic Claude** | ✅ `claude-sonnet-5` |
+| LLM | **Anthropic Claude** | ✅ Haiku 4.5 by default (individual-budget dev cost control), overridable to Sonnet via `HIVEMIND_LLM_MODEL` |
 | Messaging | **Apache Kafka** (KRaft) | ✅ durable event bus between all four agents |
 | Persistence | **PostgreSQL 16 + Flyway** | ✅ ticket state + immutable audit log (`JdbcTemplate`, not JPA) |
 | Testing | **Testcontainers** | ✅ real Postgres + Kafka per integration test, no mocks |
 | Observability | **Micrometer Tracing + OpenTelemetry** | ✅ one trace id across the HTTP request, every Kafka hop, every LLM call, and every tool call — exported as log lines *and* over OTLP to a real Jaeger backend (`docker-compose.yml`), queryable via Jaeger's own UI/API, not Prometheus/Grafana |
-| Cost tracking | **`CostTracker`** | ✅ real per-call USD from token counts, tagged onto the LLM span as `llm.cost_usd`; pricing rates are placeholders, not verified published prices |
+| Cost tracking | **`CostTracker`** | ✅ real per-call USD from token counts, tagged onto the LLM span as `llm.cost_usd`; pricing rates are real, verified Haiku 4.5 pricing, not placeholders |
 | CI | **GitHub Actions** | ✅ full test suite on every push/PR — not yet gating on the eval harness itself (cost/secrets tradeoff) |
 | Vector DB | pgvector | ❌ planned — knowledge base is 5 hardcoded chunks today |
 | Cache | Redis | ❌ planned |
@@ -101,8 +105,9 @@ GitHub secret and real spend per push, a deliberate tradeoff not yet made. See
 
 ## Target architecture (all verticals, v3)
 
-The diagram below is the destination, not the current state — a dynamic planner, a second and third
-vertical, pgvector/Redis, and a live dashboard are all still ahead. See "What's actually running
+The diagram below is the destination, not the current state — a *full* dynamic planner (one real
+branching decision exists today, see above), a second and third vertical, pgvector/Redis, and a live
+dashboard are all still ahead. See "What's actually running
 today" above for what's real right now.
 
 ```
@@ -117,7 +122,7 @@ today" above for what's real right now.
                              │
                     ┌────────▼─────────┐         ┌──────────────┐
                     │  Planner Agent   │ ──────► │  Tool        │
-                    │  (planned)       │ ◄────── │  Registry    │
+                    │  (ingest-time*)  │ ◄────── │  Registry    │
                     └────────┬─────────┘         └──────────────┘
                              │ Kafka topics: hivemind.<vertical>.*
         ┌────────────────────┼────────────────────┐
@@ -134,6 +139,10 @@ today" above for what's real right now.
    │ real, exported to real Jaeger), eval harness (real)
    └──────────────────────────────────────────────────┘
 ```
+
+\* Ingest-time dispatch (a planner deciding which agents to invoke before classify even runs) is
+still planned. A real, narrower planner decision exists today, mid-pipeline: `PlannerAgent` skips
+`ResponderAgent`'s Claude call for `ABUSE` tickets — see "What's actually running today" above.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design and section-by-section
 implementation status, [`docs/EVALS.md`](docs/EVALS.md) for the evaluation methodology,
@@ -154,9 +163,12 @@ for the package layout, file by file, built vs. planned.
 - [x] Distributed tracing — one trace id across the HTTP request, every Kafka hop, every LLM call
       (`llm.model`/`llm.cost_usd`/token-count tags), and every tool call (`tool.name`/`tool.success`/
       `tool.retry_count` tags), exported to a real Jaeger backend over OTLP (plus log lines)
+- [x] A first real planner decision — `PlannerAgent` skips response-drafting for `ABUSE` tickets
+      (no wasted Claude call), verified over real Kafka; not yet a *full* dynamic planner (see below)
 - [ ] CI gating on the eval harness itself (currently tests only)
 - [ ] Tone scoring (LLM-as-judge) — the one eval threshold still ungated
-- [ ] A dynamic planner that decides the pipeline instead of four hardcoded Kafka hops
+- [ ] A full dynamic planner — today's one real decision doesn't cover retrieval, reordering, or
+      ingest-time dispatch; most tickets still take all four fixed Kafka hops
 - [ ] pgvector-backed KB persistence, Redis short-term memory
 - [ ] Next.js dashboard with a live SSE trace stream
 
@@ -180,7 +192,7 @@ for real classify/respond calls to succeed — the app boots and the test suite 
 
 ```bash
 docker compose up -d          # Kafka (KRaft) + Postgres + Jaeger
-./mvnw test                   # 48 tests — Testcontainers spins up its own Kafka/Postgres, no external services needed
+./mvnw test                   # 51 tests — Testcontainers spins up its own Kafka/Postgres, no external services needed
 ANTHROPIC_API_KEY=sk-... ./mvnw spring-boot:run
 
 curl -X POST localhost:8080/api/v1/triage/tickets \
@@ -195,10 +207,14 @@ Open `http://localhost:16686` for the Jaeger UI and search for service `hivemind
 from that request — one trace id spanning the HTTP call, every Kafka hop, and the LLM call.
 
 Run the eval harness locally (also needs a real key to produce a meaningful score, not just a
-correctly-failing one):
+correctly-failing one — defaults to Haiku 4.5 to keep that cheap; the full 73-case run costs well
+under $1):
 
 ```bash
 ANTHROPIC_API_KEY=sk-... ./mvnw spring-boot:run -Dspring-boot.run.profiles=eval
+
+# Or restrict to specific cases for a cheap sanity check instead of the full set:
+ANTHROPIC_API_KEY=sk-... ./mvnw spring-boot:run -Dspring-boot.run.profiles=eval -Dspring-boot.run.arguments=--case=billing-001
 ```
 
 ## Status

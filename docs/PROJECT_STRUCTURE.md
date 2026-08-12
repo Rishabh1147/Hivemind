@@ -31,7 +31,7 @@ Hivemind/
 │   └── devlog/                           ✅ one file per session, e.g. 2026-07-20.md
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                        ✅ build + 48 tests on every push/PR to main — evals deliberately not gated here yet (cost/secrets, see EVALS.md)
+│       ├── ci.yml                        ✅ build + 51 tests on every push/PR to main — evals deliberately not gated here yet (cost/secrets, see EVALS.md)
 │       └── deploy.yml                    # K8s deploy — not added yet
 ├── evals/
 │   ├── triage/                           ✅ 53 hand-written *.json cases (target 50+ met, per docs/EVALS.md)
@@ -49,7 +49,7 @@ Hivemind/
     │       ├── application.yml           ✅
     │       └── db/migration/             ✅ V1__create_tickets_table.sql, V2__create_audit_events_table.sql
     └── test/
-        └── java/com/hivemind/            ✅ 16 test classes, 48 tests (plus a shared AbstractPostgresIntegrationTest base, not a test class itself)
+        └── java/com/hivemind/            ✅ 17 test classes, 51 tests (plus a shared AbstractPostgresIntegrationTest base, not a test class itself)
 ```
 
 ## `com.hivemind.platform` — the vertical-agnostic core
@@ -70,7 +70,11 @@ platform/
 ├── retry/
 │   └── JitteredExponentialBackoff.java   ✅ shared backoff math (LlmClient + ToolInvoker)
 ├── planner/
-│   └── PlannerAgent.java                 # generic planner — not built; the 4-agent triage pipeline is still four fixed Kafka hops, not planner-dispatched
+│   └── PlannerAgent.java                 # generic, vertical-agnostic planner — still not built. Not to be confused with the real, triage-specific
+│                                            `verticals/triage/agents/PlannerAgent.java` (session 20) — same class name, different package, genuinely
+│                                            different scope. The triage one exists and makes one real decision (skip response drafting for ABUSE);
+│                                            this platform-level one would be what a second vertical needing the same shape justifies generalizing to
+│                                            — same "don't extract until a second real user exists" discipline as ToolRegistry/EventConsumer before it.
 ├── memory/
 │   ├── ShortTermMemory.java              # Redis — not built
 │   ├── LongTermMemory.java               # pgvector — not built
@@ -109,29 +113,30 @@ verticals/
     ├── TriageController.java             ✅ POST /api/v1/triage/tickets (202), GET /tickets/{id}
     ├── agents/
     │   ├── ClassifierAgent.java          ✅ @AgentRole(vertical="triage", role="classifier")
+    │   ├── PlannerAgent.java             ✅ @AgentRole(vertical="triage", role="planner") — new session 20, not from the original scaffold plan below. Deterministic, no LlmClient call: decides whether to draft a response at all (ABUSE → skip)
     │   ├── RetrieverAgent.java           ✅ @AgentRole(vertical="triage", role="retriever"), calls searchKb via ToolRegistry+ToolInvoker
     │   ├── ResponderAgent.java           ✅ @AgentRole(vertical="triage", role="responder"), drafts answer + citations via LlmClient
     │   ├── RoutingAgent.java             ✅ @AgentRole(vertical="triage", role="router"), deterministic policy — no LlmClient call
-    │   └── TriageContextKeys.java        ✅ shared AgentContext keys (ticketBody, retrievedChunks, currentTriageResponse) — used by all four agents above
+    │   └── TriageContextKeys.java        ✅ shared AgentContext keys (ticketBody, retrievedChunks, currentTriageResponse, classification) — used by all agents above
     ├── messaging/
     │   ├── TriageTopics.java             ✅ CLASSIFY / CLASSIFIED / RETRIEVED / RESPONDED / ROUTED topic name constants
-    │   ├── ClassifyRequestConsumer.java  ✅ extends EventConsumer, runs ClassifierAgent, publishes TicketClassified
-    │   ├── TicketClassifiedConsumer.java ✅ extends EventConsumer, runs RetrieverAgent, publishes TicketRetrieved
-    │   ├── TicketRetrievedConsumer.java  ✅ extends EventConsumer, runs ResponderAgent, publishes TicketResponded, writes TicketRepository
+    │   ├── ClassifyRequestConsumer.java  ✅ extends EventConsumer, runs ClassifierAgent then PlannerAgent, publishes TicketClassified (carries PlannerAgent's decision as nextStep)
+    │   ├── TicketClassifiedConsumer.java ✅ extends EventConsumer, runs RetrieverAgent, publishes TicketRetrieved (passes nextStep through unchanged)
+    │   ├── TicketRetrievedConsumer.java  ✅ extends EventConsumer, runs ResponderAgent unless nextStep is SKIP_RESPONSE, publishes TicketResponded, writes TicketRepository
     │   └── TicketRespondedConsumer.java  ✅ extends EventConsumer, runs RoutingAgent, publishes TicketRouted, writes TicketRepository (never skips, even on response_failed)
     ├── events/
     │   ├── ClassifyRequested.java        ✅ {ticketId, body} — the classify-request payload
-    │   ├── TicketClassified.java         ✅ {ticketId, ticketBody, status, category, confidence, error} — classify result, carries body for the retrieve stage
-    │   ├── TicketRetrieved.java          ✅ {ticketId, ticketBody, status, chunks, error} — retrieve result, carries body for the respond stage
-    │   ├── TicketResponded.java          ✅ {ticketId, status, answer, citedChunkIds, error} — respond result
+    │   ├── TicketClassified.java         ✅ {ticketId, ticketBody, status, category, confidence, nextStep, error} — classify + PlannerAgent's decision, carries body for the retrieve stage
+    │   ├── TicketRetrieved.java          ✅ {ticketId, ticketBody, status, chunks, nextStep, error} — retrieve result, carries body + nextStep for the respond stage
+    │   ├── TicketResponded.java          ✅ {ticketId, status, answer, citedChunkIds, error} — respond result (status is "response_skipped" when PlannerAgent skipped drafting)
     │   └── TicketRouted.java             ✅ {ticketId, status, routingDecision, error} — final route result
     ├── eval/
     │   ├── TriageEvalCase.java            ✅ {id, ticket, expectedCategory, expectedRouting, mustCite} — loaded from evals/triage/*.json
     │   ├── TriageEvalResult.java          ✅ one case's scored outcome
     │   ├── TriageEvalReport.java          ✅ aggregate accuracy/recall/latency, written to eval-results/<timestamp>.json
     │   ├── TriageEvalScorer.java          ✅ pure comparison logic, unit-tested with no agents/mocks
-    │   ├── TriageEvalRunner.java          ✅ runs all 4 agents in-process per case (no Kafka — evals score model quality, not event-bus plumbing)
-    │   └── TriageEvalHarnessRunner.java   ✅ CommandLineRunner, @Profile("eval"), gates on hivemind.eval.thresholds.*, real exit code
+    │   ├── TriageEvalRunner.java          ✅ runs classify→plan→retrieve→(respond)→route in-process per case (no Kafka — evals score model quality, not event-bus plumbing); mirrors PlannerAgent's skip branch so eval cost/behavior matches production
+    │   └── TriageEvalHarnessRunner.java   ✅ CommandLineRunner, @Profile("eval"), gates on hivemind.eval.thresholds.*, real exit code, optional --case=<id> filter
     ├── kb/
     │   ├── KbChunk.java                  ✅ {id, title, text}
     │   └── KnowledgeBase.java            ✅ 5 hardcoded chunks — stand-in for a Postgres-backed KB
@@ -147,12 +152,14 @@ verticals/
         ├── Classification.java           ✅ {category, confidence}
         ├── DraftResponse.java            ✅ {answer, citedChunkIds} — ResponderAgent output
         ├── RoutingDecision.java          ✅ AUTO_RESOLVE/QUEUE_FOR_HUMAN/ESCALATE — RoutingAgent output
-        └── TriageResponse.java           ✅ outbound DTO, progressively enriched (pending → classified → responded → routed) via with*() methods
+        ├── PlanDecision.java             ✅ DRAFT_RESPONSE/SKIP_RESPONSE — PlannerAgent output, new session 20
+        └── TriageResponse.java           ✅ outbound DTO, progressively enriched (pending → classified → responded/response_skipped → routed) via with*() methods
 ```
 
 Every file originally sketched in the Day-1 scaffold plan under `verticals/triage/agents/` and
 `verticals/triage/model/` is now built — the four planned-but-unbuilt tool files above are the only
-remaining placeholders in this vertical.
+remaining placeholders in this vertical. `PlannerAgent.java`/`PlanDecision.java` (session 20) are new
+additions beyond that original plan, not placeholders it filled in.
 
 When CodeScout (v2) and DeepDigger (v3) ship, they'll be siblings under
 `verticals/`. They will not modify any `platform/` code.
@@ -200,9 +207,13 @@ cases today, meeting the 50+ target, and `evals/triage-adversarial/` has a
 separate 20 (session 18, 2026-08-10) — same `TriageEvalCase` schema, run
 through the identical pipeline via `TriageEvalRunner.runAdversarial()`, but
 never gated. Run cases with
-`./mvnw spring-boot:run -Dspring-boot.run.profiles=eval`; results land in
+`./mvnw spring-boot:run -Dspring-boot.run.profiles=eval`, optionally restricted to specific ids with
+`-Dspring-boot.run.arguments=--case=billing-001` (session 19 — real Claude spend limited to just the
+listed cases, across both directories); results land in
 `eval-results/<timestamp>.json` and `eval-results/<timestamp>-adversarial.json`
-(both gitignored). Thresholds in `application.yml`
+(both gitignored). `hivemind.llm.model` defaults to Claude Haiku 4.5 (session 19, individual-budget
+cost control), with `hivemind.llm.pricing.*` set to real verified Haiku rates to match — override
+both together via `HIVEMIND_LLM_MODEL` for a Sonnet-quality demo run. Thresholds in `application.yml`
 (`hivemind.eval.thresholds.*`) are read and gated on by
 `TriageEvalHarnessRunner` — `category-accuracy`, `citation-recall`,
 `p95-latency-ms`, and (as of session 14) `cost-per-ticket-usd` — only for the
@@ -216,7 +227,7 @@ The Next.js dashboard lives in `frontend/` at the repo root, once built.
 It is a sibling of the Spring Boot app, not a Spring resource. It builds
 and deploys independently.
 
-## Current state (as of 2026-08-10, session 18)
+## Current state (as of 2026-08-12, session 20)
 
 Real code exists in `platform/agent`, `platform/llm` (including `LlmResponse`/`CostTracker`, and,
 since session 15, the `llm.complete` tracing span inside `LlmClient` itself), `platform/messaging`
@@ -228,12 +239,17 @@ Jaeger all run via `docker-compose.yml` — Kafka carrying four chained consumer
 (classify → retrieve → respond → route) with a single trace id propagated via Kafka headers across
 every hop and every LLM/tool call inside those hops, exported both as log lines and over OTLP to the
 real Jaeger container; Postgres backing both `TicketRepository` (current state) and `AuditLog`
-(immutable event history). `evals/triage/` has 53 real cases (the 50+ target, met session 13), run
-via the `eval` Spring profile and gated on four of five configured thresholds; `evals/triage-adversarial/`
+(immutable event history). As of session 20, `PlannerAgent` makes the pipeline's first real branching
+decision — an `ABUSE` classification now skips `ResponderAgent` (and its Claude call) entirely, with
+retrieval still running so the citation trail survives; every other category still takes all four
+hops unchanged. `evals/triage/` has 53 real cases (the 50+ target, met session 13), run via the
+`eval` Spring profile and gated on four of five configured thresholds; `evals/triage-adversarial/`
 has a separate 20 (session 18), run through the identical pipeline but never gated — tracked, not
-blocking. GitHub Actions CI runs the 48-test suite on every push/PR — not yet the eval harness
-itself. Nothing under `k8s/` or `frontend/` exists yet — those are still purely descriptions, filled
-in if/when their sessions come up.
+blocking. As of session 19 the harness defaults to Claude Haiku 4.5 with real verified pricing
+(individual-budget cost control, not an org-funded project) and accepts a `--case=<id>` filter to
+restrict a run to specific cases instead of the full 73. GitHub Actions CI runs the 51-test suite on
+every push/PR — not yet the eval harness itself. Nothing under `k8s/` or `frontend/` exists yet —
+those are still purely descriptions, filled in if/when their sessions come up.
 
 For the full narrative — what each of these pieces actually does, the
 request lifecycle as it genuinely runs today, and the reasoning behind

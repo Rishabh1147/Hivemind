@@ -1,6 +1,6 @@
 # Evaluation
 
-*Implementation status (as of 2026-08-10): the harness described below is real —
+*Implementation status (as of 2026-08-12): the harness described below is real —
 `verticals/triage/eval/`, runnable via `./mvnw spring-boot:run -Dspring-boot.run.profiles=eval`
 (this doc's original placeholder below said `./gradlew`, which was never accurate — this project
 has always been Maven). The 50+ case target is met: 53 cases across
@@ -9,12 +9,19 @@ abuse, 3 edge-case, 2 other), validated on every `mvn test` run by `EvalCaseSetT
 every `mustCite` entry resolves to a real `KnowledgeBase` chunk, no blank tickets) — separate from
 actually running the harness against a live model, which none of this requires. Category accuracy,
 routing correctness, citation recall, and (as of 2026-08-05) cost-per-ticket are scored and gated —
-`CostTracker` turns real token counts from every Claude call into a USD figure at a configurable,
-currently-placeholder per-million-token rate (`hivemind.llm.pricing.*`). Tone (needs a live
-LLM-as-judge call no session has had a real Anthropic key to verify against) is still designed below
-but not gated. The 20-case adversarial set (as of 2026-08-10) is also built and real — see its own
-section below for what changed from the original sketch and why. See `docs/devlog/` for the full
-"what's real vs. still aspirational" account, session by session.*
+`CostTracker` turns real token counts from every Claude call into a USD figure at a configurable
+per-million-token rate (`hivemind.llm.pricing.*`); as of 2026-08-12 that rate is real, verified Claude
+Haiku 4.5 pricing (`hivemind.llm.model`'s default as of the same date — see "Which model, and why
+Haiku" below), not a placeholder. Tone (needs a live LLM-as-judge call no session has had a real
+Anthropic key to verify against) is still designed below but not gated. The 20-case adversarial set
+(as of 2026-08-10) is also built and real — see its own section below for what changed from the
+original sketch and why. The `--case=<id>` filter this doc used to describe as "not yet" is also real
+as of 2026-08-12 — see "Running locally" below. As of the same date (session 20), `TriageEvalRunner`
+also runs `PlannerAgent` after classification and skips `ResponderAgent` on `PlanDecision.SKIP_RESPONSE`
+(today: `ABUSE` tickets) — mirroring the real pipeline's new branching rather than always calling every
+agent, so scored cost and behavior match what production actually does, not a stale always-four-agents
+shape. See `docs/devlog/` for the full "what's real vs. still aspirational" account, session by
+session.*
 
 ## Why eval-first
 
@@ -97,7 +104,18 @@ session 10, all four gateable thresholds finally wired as of 2026-08-05:
 | Citation recall | ≥ 0.70 | ✅ |
 | Tone (avg) | ≥ 4.0 | ❌ not yet — no tone scoring |
 | p95 latency | ≤ 8s | ✅ |
-| Cost per ticket | ≤ $0.05 | ✅ — `hivemind.llm.pricing.*` rates are placeholders, not verified real pricing for `hivemind.llm.model` |
+| Cost per ticket | ≤ $0.05 | ✅ — `hivemind.llm.pricing.*` is real, verified Claude Haiku 4.5 pricing (as of 2026-08-12), not a placeholder, and matches `hivemind.llm.model`'s default |
+
+### Which model, and why Haiku
+
+`hivemind.llm.model` defaults to Claude Haiku 4.5 (`${HIVEMIND_LLM_MODEL:claude-haiku-4-5-20251001}`
+in `application.yml`), not Sonnet — a deliberate cost decision, not a downgrade nobody noticed. This
+is an individual-budget project in active iterative dev, and Haiku is fully capable of exercising the
+pipeline and eval mechanics for that purpose; override to a stronger model via `HIVEMIND_LLM_MODEL`
+(e.g. `claude-sonnet-5`) for a run where response *quality* itself is what's being judged, such as a
+demo for an interview. `hivemind.llm.pricing.*` must be updated to match whichever model is actually
+configured — the two aren't linked in code, so they can silently drift out of sync if only one is
+changed.
 
 `TriageEvalHarnessRunner` exits non-zero on any gated threshold failing — verified by running the
 harness with a deliberately invalid Anthropic key (every case fails, `categoryAccuracy = 0.0`, exit
@@ -157,15 +175,19 @@ These don't gate CI but are tracked over time to measure robustness.
 ## Running locally
 
 ```bash
-# Runs every case under evals/<vertical>/ for the enabled verticals.
+# Runs every case under evals/<vertical>/ for the enabled verticals — both the primary and
+# adversarial sets, ~73 real Claude calls total.
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=eval
 
-# Or against the packaged jar (this is what a real CI step would run):
-java -jar target/hivemind-0.1.0-SNAPSHOT.jar --spring.profiles.active=eval
-```
+# Restrict to specific case ids — real Claude spend limited to just these, useful for a cheap
+# "did I wire this correctly" sanity check instead of the full set. Repeatable and/or comma-separated;
+# applies to both the primary and adversarial directories (an id with no match in one just runs zero
+# cases there — harmless, since zero cases means zero calls).
+./mvnw spring-boot:run -Dspring-boot.run.profiles=eval -Dspring-boot.run.arguments=--case=billing-001,abuse-001
 
-There's no per-case filter (`--case=billing-001`) yet — the harness always runs the full case set
-for the vertical.
+# Or against the packaged jar (this is what a real CI step would run):
+java -jar target/hivemind-0.1.0-SNAPSHOT.jar --spring.profiles.active=eval --case=billing-001
+```
 
 ## Reporting
 

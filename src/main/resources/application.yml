@@ -49,17 +49,25 @@ hivemind:
     default-vertical: triage
   llm:
     provider: anthropic
-    model: claude-sonnet-5
+    # Haiku by default: this is an individual-budget project in active iterative dev, not an
+    # org-funded one, and Haiku is more than capable of exercising the pipeline/eval mechanics for
+    # that. Override to a stronger model (e.g. claude-sonnet-5) via HIVEMIND_LLM_MODEL for a demo run
+    # where response quality itself is what's being judged — and update the pricing rates below to
+    # match if you do, since they're real numbers for whichever model is actually configured here,
+    # not auto-derived from it.
+    model: ${HIVEMIND_LLM_MODEL:claude-haiku-4-5-20251001}
     api-key: ${ANTHROPIC_API_KEY:}
     max-tokens: 1024
     retry:
       max-attempts: 3
       base-backoff-ms: 500
     pricing:
-      # Placeholders, not verified published pricing for `model` above — update to the real rate
-      # before trusting the dollar figures for anything beyond exercising the cost-per-ticket gate.
-      input-cost-per-million-tokens: 3.00
-      output-cost-per-million-tokens: 15.00
+      # Real, verified Claude Haiku 4.5 pricing (anthropic.com/claude/haiku, checked 2026-08-12) — the
+      # first non-placeholder numbers here since this field was added session 14. These are correct
+      # for the default model above; if `model` changes, these must change with it (see the note
+      # there) or the cost-per-ticket figures this feeds will quietly be wrong for a different model.
+      input-cost-per-million-tokens: 1.00
+      output-cost-per-million-tokens: 5.00
   tool:
     timeout-ms: 5000
     retry:

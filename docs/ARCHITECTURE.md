@@ -34,17 +34,26 @@ walkthrough of what's actually running, see the README's "What's actually runnin
 7. **Stream**: Every step emits events to `hivemind.trace`; API Gateway
    consumes and pushes to Next.js dashboard via SSE.
 
-*Implementation status: steps 1, 3, 4, 5 are real, with two differences from the sketch above.
-There's no Planner Agent — step 2 is `TriageController` publishing directly to
-`hivemind.triage.classify`, and step 6's routing is a deterministic `RoutingAgent` policy
-(category/confidence → decision), not a planner decision; today's chain is four fixed Kafka hops,
-not dynamically planned. Step 4's "hybrid search (BM25 + pgvector)" is naive keyword-overlap
-scoring over 5 hardcoded `KnowledgeBase` chunks (`SearchKbTool`) — real retrieval, not yet the
-described hybrid. Step 7 (SSE streaming to a dashboard) doesn't exist; there's no `hivemind.trace`
-topic and no frontend. What does exist instead of step 7: distributed tracing (Micrometer +
-OpenTelemetry) that follows one trace id through steps 1–6 via Kafka header propagation, exported as
-log lines — a different mechanism answering a related but distinct need (debugging one request's
-path, not a live human-facing dashboard).*
+*Implementation status: steps 1, 3, 4, 5 are real, with differences from the sketch above. Step 2 as
+sketched here — a Planner Agent deciding which sub-agents to invoke at ingest, before classify even
+runs — still doesn't exist: `TriageController` still publishes directly to `hivemind.triage.classify`,
+unchanged. Step 6's routing is still a deterministic `RoutingAgent` policy (category/confidence →
+decision), not a planner decision, also unchanged. A real `PlannerAgent` does exist now (session 20),
+just not doing what step 2 describes — it sits between classify and respond, not at ingest, and
+decides one thing: whether the ticket gets a drafted response at all. An `ABUSE` classification skips
+`ResponderAgent` (and its Claude call) entirely, since `RoutingAgent` escalates every `ABUSE` ticket
+unconditionally regardless of what (if anything) got drafted — retrieval still runs either way, so the
+citation/audit trail survives even with nothing drafted. This is a first real branching decision, not
+the full vision: it doesn't decide retrieval, doesn't reorder stages, doesn't retry, and doesn't run
+at ingest — "four hardcoded hops" is no longer fully accurate for `ABUSE` tickets specifically, but
+still accurate for every other category. Step 4's "hybrid search (BM25 + pgvector)" is naive
+keyword-overlap scoring over 5 hardcoded `KnowledgeBase` chunks (`SearchKbTool`) — real retrieval, not
+yet the described hybrid. Step 7 (SSE streaming to a dashboard) doesn't exist; there's no
+`hivemind.trace` topic and no frontend. What does exist instead of step 7: distributed tracing
+(Micrometer + OpenTelemetry) that follows one trace id through steps 1–6 via Kafka header propagation,
+exported as log lines and, since session 17, over OTLP to a real Jaeger backend — a different
+mechanism answering a related but distinct need (debugging one request's path, not a live human-facing
+dashboard).*
 
 ## Why Kafka between agents (vs in-process)
 
@@ -159,7 +168,7 @@ as a packaged jar. This section describes the target, not anything running today
 | Failure | Handling | Status |
 |---|---|---|
 | LLM rate limit | Exponential backoff; circuit breaker; fallback model | ⚠️ partial — `LlmClient` retries `RetriableException` (rate limits, 5xx) with full-jitter backoff, up to 3 attempts by default. No circuit breaker, no fallback model |
-| Tool timeout | Retry up to 3x; mark step failed; planner decides retry vs escalate | ⚠️ partial — `ToolInvoker` retries on timeout only (not on a tool's own thrown exception) with the same backoff. "Mark step failed" is real (`AgentResult.failure(...)`); there's no planner to decide retry-vs-escalate, since there's no planner |
+| Tool timeout | Retry up to 3x; mark step failed; planner decides retry vs escalate | ⚠️ partial — `ToolInvoker` retries on timeout only (not on a tool's own thrown exception) with the same backoff. "Mark step failed" is real (`AgentResult.failure(...)`); `PlannerAgent` exists now (session 20) but doesn't cover this — its one decision today is whether to draft a response at all, not tool-retry-vs-escalate |
 | Kafka unavailable | Buffer in local outbox; replay on reconnect | ❌ not built — no local outbox; a publish failure surfaces as an exception |
 | Eval regression | CI blocks merge | ⚠️ partial — the eval harness itself exits non-zero on a gating failure (real, verified); no CI workflow invokes it yet, so nothing currently blocks a merge on eval regression specifically (CI does block on the test suite) |
 | Vector store unavailable | Fall back to BM25-only retrieval; flag in trace | ❌ not applicable yet — there's no vector store or BM25 to fall between; `SearchKbTool` is the only retrieval path today |
@@ -180,7 +189,9 @@ as a packaged jar. This section describes the target, not anything running today
 *Implementation status: the topic-naming convention, `@AgentRole`, `@Tool`, and the vertical-agnostic
 `platform/` package are all real — enforced by discipline (`platform/` never imports from
 `verticals/`) rather than a build-time check. `@AgentRole` is currently decorative metadata only, not
-used for any dynamic dispatch (there's no planner reading it to route requests). Only one vertical
+used for any dynamic dispatch — `PlannerAgent` (session 20) is wired into `ClassifyRequestConsumer`/
+`TriageEvalRunner` via ordinary constructor injection like every other agent, not discovered by
+reading this annotation at runtime. Only one vertical
 (`triage`) actually exists, so "vertical-agnostic shared infra" is a design property that's been
 maintained, not yet proven by a second vertical genuinely exercising it — see `EXTENDING.md`'s own
 status note.*
