@@ -27,6 +27,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
@@ -55,6 +56,11 @@ import java.util.stream.Stream;
  * non-English tickets, since retrieval is naive English keyword-overlap, not semantic search) rather
  * than to pass 100% of the time.
  *
+ * <p>Since session 21, {@link TriageEvalToneJudge} scores tone (LLM-as-judge) on whatever answer
+ * came out of the draft-response path above — a case with no drafted answer (skipped, or errored
+ * before reaching this point) simply gets no tone score, not a failing one; see
+ * {@link TriageEvalToneJudgment} for why that's "not applicable," not zero.
+ *
  * <p>Both methods take a {@code caseIdFilter} — empty means "run every case in the directory," a
  * non-empty set restricts the run to just those ids. This is what backs {@code --case=<id>} on the
  * harness (see {@code TriageEvalHarnessRunner}): every real Claude call this class makes costs real
@@ -72,6 +78,7 @@ public class TriageEvalRunner {
     private final RetrieverAgent retrieverAgent;
     private final ResponderAgent responderAgent;
     private final RoutingAgent routingAgent;
+    private final TriageEvalToneJudge toneJudge;
     private final ObjectMapper objectMapper;
     private final Path primaryCasesDir;
     private final Path adversarialCasesDir;
@@ -82,6 +89,7 @@ public class TriageEvalRunner {
             RetrieverAgent retrieverAgent,
             ResponderAgent responderAgent,
             RoutingAgent routingAgent,
+            TriageEvalToneJudge toneJudge,
             ObjectMapper objectMapper,
             @Value("${hivemind.eval.cases-dir:evals}") String casesDir) {
         this.classifierAgent = classifierAgent;
@@ -89,6 +97,7 @@ public class TriageEvalRunner {
         this.retrieverAgent = retrieverAgent;
         this.responderAgent = responderAgent;
         this.routingAgent = routingAgent;
+        this.toneJudge = toneJudge;
         this.objectMapper = objectMapper;
         this.primaryCasesDir = Path.of(casesDir, "triage");
         this.adversarialCasesDir = Path.of(casesDir, "triage-adversarial");
@@ -180,8 +189,13 @@ public class TriageEvalRunner {
             AgentResult<RoutingDecision> routeResult = routingAgent.handle(routeContext);
             RoutingDecision actualRouting = routeResult.success() ? routeResult.payload() : null;
 
+            // toneJudge.judge() is itself a no-op (no LLM call) when answer is null, e.g. the
+            // PlanDecision.SKIP_RESPONSE path above — nothing to judge the tone of.
+            TriageEvalToneJudgment toneJudgment = toneJudge.judge(evalCase.ticket(), answer);
+
             return TriageEvalScorer.score(
-                    evalCase, actualCategory, actualRouting, citedChunkIds, elapsedMs(start), costUsdSoFar);
+                    evalCase, actualCategory, actualRouting, citedChunkIds, elapsedMs(start), costUsdSoFar,
+                    toneJudgment);
         } catch (Exception e) {
             return errorResult(evalCase, start, 0.0, e.getMessage());
         }
@@ -189,7 +203,8 @@ public class TriageEvalRunner {
 
     private TriageEvalResult errorResult(TriageEvalCase evalCase, long start, double costUsd, String error) {
         return new TriageEvalResult(
-                evalCase.id(), false, false, false, null, null, List.of(), elapsedMs(start), costUsd, error);
+                evalCase.id(), false, false, false, null, null, List.of(), elapsedMs(start), costUsd,
+                null, 0.0, error);
     }
 
     private long elapsedMs(long startNanos) {
@@ -203,6 +218,12 @@ public class TriageEvalRunner {
         double routingAccuracy = rate(results, TriageEvalResult::routingCorrect);
         double citationRecall = rate(results, TriageEvalResult::citationRecallMet);
         double avgCostUsd = results.stream().mapToDouble(TriageEvalResult::costUsd).average().orElse(0.0);
+
+        List<Integer> toneScores = results.stream()
+                .map(TriageEvalResult::toneScore)
+                .filter(Objects::nonNull)
+                .toList();
+        double avgTone = toneScores.stream().mapToInt(Integer::intValue).average().orElse(0.0);
 
         List<Long> sortedLatencies = results.stream()
                 .map(TriageEvalResult::latencyMs)
@@ -219,6 +240,8 @@ public class TriageEvalRunner {
                 percentile(sortedLatencies, 0.50),
                 percentile(sortedLatencies, 0.95),
                 avgCostUsd,
+                avgTone,
+                toneScores.size(),
                 results);
     }
 

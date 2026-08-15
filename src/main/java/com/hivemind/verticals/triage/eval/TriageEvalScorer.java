@@ -17,7 +17,8 @@ public final class TriageEvalScorer {
 
     public static TriageEvalResult score(
             TriageEvalCase evalCase, Category actualCategory, RoutingDecision actualRouting,
-            List<String> actualCitedChunkIds, long latencyMs, double costUsd) {
+            List<String> actualCitedChunkIds, long latencyMs, double costUsd,
+            TriageEvalToneJudgment toneJudgment) {
         boolean categoryCorrect = actualCategory == evalCase.expectedCategory();
         // Routing depends on model confidence, which isn't knowable when a case is authored — a
         // null expectedRouting means "not applicable to this case," not "must be null."
@@ -27,6 +28,7 @@ public final class TriageEvalScorer {
 
         return new TriageEvalResult(
                 evalCase.id(), categoryCorrect, routingCorrect, citationRecallMet,
-                actualCategory, actualRouting, actualCitedChunkIds, latencyMs, costUsd, null);
+                actualCategory, actualRouting, actualCitedChunkIds, latencyMs, costUsd,
+                toneJudgment.score(), toneJudgment.costUsd(), null);
     }
 }

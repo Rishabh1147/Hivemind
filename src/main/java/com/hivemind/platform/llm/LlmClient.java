@@ -19,8 +19,9 @@ import java.util.Objects;
 /**
  * Vertical-agnostic wrapper around the LangChain4j {@link ChatModel}. Every vertical talks to
  * Claude through this, never directly through LangChain4j types, so a retry policy, real
- * token-usage-derived cost via {@link CostTracker}, and the {@code llm.*} tracing span all exist in
- * exactly one place instead of being re-derived per agent.
+ * token-usage-derived cost via {@link CostTracker}, the {@code llm.*} tracing span, and stripping an
+ * occasional markdown code fence off strict-JSON completions ({@link MarkdownCodeFenceStripper}) all
+ * exist in exactly one place instead of being re-derived per agent.
  *
  * <p>Retries transient provider failures ({@link RetriableException} — rate limits, 5xx) with
  * exponential backoff and full jitter, up to {@code maxAttempts}. Anything else (auth errors,
@@ -118,7 +119,8 @@ public class LlmClient {
      */
     protected LlmResponse doChat(String systemPrompt, String userMessage) {
         ChatResponse response = chatModel.chat(SystemMessage.from(systemPrompt), UserMessage.from(userMessage));
-        return new LlmResponse(response.aiMessage().text(), response.tokenUsage(), 0.0);
+        String text = MarkdownCodeFenceStripper.strip(response.aiMessage().text());
+        return new LlmResponse(text, response.tokenUsage(), 0.0);
     }
 
 }

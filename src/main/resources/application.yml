@@ -48,16 +48,30 @@ hivemind:
   platform:
     default-vertical: triage
   llm:
-    provider: anthropic
+    # anthropic (default) talks to api.anthropic.com directly; bedrock (session 21) routes the same
+    # Claude models through AWS instead — see ClaudeConfig. Switching provider almost always means
+    # switching `model` too (see the note below), since the two providers use different id formats
+    # for the same underlying model.
+    provider: ${HIVEMIND_LLM_PROVIDER:anthropic}
     # Haiku by default: this is an individual-budget project in active iterative dev, not an
     # org-funded one, and Haiku is more than capable of exercising the pipeline/eval mechanics for
     # that. Override to a stronger model (e.g. claude-sonnet-5) via HIVEMIND_LLM_MODEL for a demo run
     # where response quality itself is what's being judged — and update the pricing rates below to
     # match if you do, since they're real numbers for whichever model is actually configured here,
-    # not auto-derived from it.
+    # not auto-derived from it. Model id format is provider-specific: a plain Anthropic id
+    # (claude-haiku-4-5-20251001) for provider=anthropic, or a Bedrock inference-profile id
+    # (us.anthropic.claude-haiku-4-5-20251001-v1:0) for provider=bedrock — not interchangeable.
     model: ${HIVEMIND_LLM_MODEL:claude-haiku-4-5-20251001}
+    # Only read for provider=anthropic. Bedrock authenticates via the AWS SDK's own credential
+    # resolution (AWS_BEARER_TOKEN_BEDROCK or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env vars),
+    # never through this property.
     api-key: ${ANTHROPIC_API_KEY:}
     max-tokens: 1024
+    aws:
+      # Bedrock-only. us-east-1 is where Haiku 4.5 model access was actually verified working
+      # (2026-08-14, a real Converse API call) — change only if you've enabled model access
+      # elsewhere.
+      region: ${HIVEMIND_LLM_AWS_REGION:us-east-1}
     retry:
       max-attempts: 3
       base-backoff-ms: 500

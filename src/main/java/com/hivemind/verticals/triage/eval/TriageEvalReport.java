@@ -12,6 +12,12 @@ import java.util.List;
  * <p>{@code avgCostUsd} (session 14) is the mean of every case's {@code TriageEvalResult.costUsd()}
  * — including cases that errored partway through, since whatever LLM calls did complete before the
  * failure still cost real money.
+ *
+ * <p>{@code avgTone} (session 21) is the mean of only the cases with a non-null
+ * {@code TriageEvalResult.toneScore()} — {@code toneScoredCases} is that count, kept alongside it so
+ * {@code TriageEvalHarnessRunner} can tell "zero applicable cases" (e.g. a {@code --case} filter that
+ * only matched skip-response cases) apart from "every applicable case scored the worst possible
+ * tone," which a bare {@code 0.0} average couldn't distinguish.
  */
 public record TriageEvalReport(
         Instant runAt,
@@ -23,5 +29,7 @@ public record TriageEvalReport(
         long p50LatencyMs,
         long p95LatencyMs,
         double avgCostUsd,
+        double avgTone,
+        int toneScoredCases,
         List<TriageEvalResult> results) {
 }

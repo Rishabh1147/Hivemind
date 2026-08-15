@@ -6,7 +6,7 @@
 > runtime.
 
 [![Build](https://github.com/Rishabh1147/Hivemind/actions/workflows/ci.yml/badge.svg)](https://github.com/Rishabh1147/Hivemind/actions)
-[![Eval Score](https://img.shields.io/badge/eval--score-pending-lightgrey)](#)
+[![Eval Score](https://img.shields.io/badge/eval--score-53%2F53%20passing-brightgreen)](docs/EVALS.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 
 ---
@@ -66,7 +66,7 @@ for the full walkthrough and the reasoning behind every design choice.
 | Language | **Java 21** | ✅ records, virtual threads, text blocks in active use |
 | Framework | **Spring Boot 3.3.5** | ✅ |
 | LLM SDK | **LangChain4j 1.17.2** | ✅ client layer only — Kafka does orchestration, not LangChain4j |
-| LLM | **Anthropic Claude** | ✅ Haiku 4.5 by default (individual-budget dev cost control), overridable to Sonnet via `HIVEMIND_LLM_MODEL` |
+| LLM | **Anthropic Claude** | ✅ Haiku 4.5 by default (individual-budget dev cost control), overridable to Sonnet via `HIVEMIND_LLM_MODEL`. Two providers: direct Anthropic API (default) or AWS Bedrock (`HIVEMIND_LLM_PROVIDER=bedrock`, session 21) — same `ChatModel` interface either way, so nothing downstream of `ClaudeConfig` knows or cares which one is active |
 | Messaging | **Apache Kafka** (KRaft) | ✅ durable event bus between all four agents |
 | Persistence | **PostgreSQL 16 + Flyway** | ✅ ticket state + immutable audit log (`JdbcTemplate`, not JPA) |
 | Testing | **Testcontainers** | ✅ real Postgres + Kafka per integration test, no mocks |
@@ -88,20 +88,26 @@ pipeline and scores:
 - **Routing correctness** — where the outcome doesn't depend on model confidence (e.g. abuse always
   escalates)
 - **Citation recall** — does the response cite at least one real, relevant KB entry?
+- **Tone** (LLM-as-judge, 1–5) — `TriageEvalToneJudge`, a real Claude call
 - **p95 latency**
 - **Cost per ticket** — real dollars, computed from actual token counts
 
-Four of these five are gated with a real process exit code
-(`./mvnw spring-boot:run -Dspring-boot.run.profiles=eval`) — tone (LLM-as-judge) is designed but not
-yet scored. The same run also scores a separate, 20-case **adversarial set**
+All five are gated with a real process exit code
+(`./mvnw spring-boot:run -Dspring-boot.run.profiles=eval`) — first run against a real, funded key was
+2026-08-15 (session 21, via AWS Bedrock — direct Anthropic credits were unfunded that session): 53/53
+primary cases passed every gate (100% category/routing/citation accuracy, avg tone 4.32/5, p95
+5.2s, $0.00094/ticket), and the full 73-case run (primary + adversarial + every tone-judge call) cost
+$0.09 total. The same run also scores a separate, 20-case **adversarial set**
 (`evals/triage-adversarial/` — prompt injection, contradictory ticket content, multi-issue tickets,
 non-English text, no-relevant-KB-context grounding checks) through the identical pipeline, written to
 its own report file but never gated — it's designed to surface known weaknesses and get tracked over
-time, not to pass 100% of the time. **This gate runs locally, not in CI yet** — GitHub Actions
-currently runs the unit/ integration test suite only; wiring the eval harness into CI needs a real
-`ANTHROPIC_API_KEY` as a
-GitHub secret and real spend per push, a deliberate tradeoff not yet made. See
-[`docs/EVALS.md`](docs/EVALS.md) for the full scoring rubric and reasoning.
+time, not to pass 100% of the time; that first real run scored 90% category accuracy and did exactly
+that: it caught a real, non-English-specific parsing gap under prompt injection (the model correctly
+resisted the injection but broke the strict-JSON contract by appending defensive prose after the
+answer) — see [`docs/EVALS.md`](docs/EVALS.md) for the full story. **This gate runs locally, not in
+CI yet** — GitHub Actions currently runs the unit/integration test suite only; wiring the eval harness
+into CI needs a funded key as a GitHub secret and real spend per push, a deliberate tradeoff not yet
+made. See [`docs/EVALS.md`](docs/EVALS.md) for the full scoring rubric and reasoning.
 
 ## Target architecture (all verticals, v3)
 
@@ -165,8 +171,10 @@ for the package layout, file by file, built vs. planned.
       `tool.retry_count` tags), exported to a real Jaeger backend over OTLP (plus log lines)
 - [x] A first real planner decision — `PlannerAgent` skips response-drafting for `ABUSE` tickets
       (no wasted Claude call), verified over real Kafka; not yet a *full* dynamic planner (see below)
+- [x] AWS Bedrock as a second LLM provider (`HIVEMIND_LLM_PROVIDER=bedrock`) — useful when direct
+      Anthropic credits are unfunded but AWS credits aren't; same `ChatModel` seam, no agent-level change
+- [x] Tone scoring (LLM-as-judge) — all five eval thresholds now gated; first real run 2026-08-15
 - [ ] CI gating on the eval harness itself (currently tests only)
-- [ ] Tone scoring (LLM-as-judge) — the one eval threshold still ungated
 - [ ] A full dynamic planner — today's one real decision doesn't cover retrieval, reordering, or
       ingest-time dispatch; most tickets still take all four fixed Kafka hops
 - [ ] pgvector-backed KB persistence, Redis short-term memory
@@ -187,13 +195,17 @@ for the package layout, file by file, built vs. planned.
 
 ## Quick start
 
-Requires Docker (for Kafka + Postgres + Jaeger) and a JDK 21. An `ANTHROPIC_API_KEY` is only needed
-for real classify/respond calls to succeed — the app boots and the test suite passes without one.
+Requires Docker (for Kafka + Postgres + Jaeger) and a JDK 21. A funded key is only needed for real
+classify/respond calls to succeed — the app boots and the test suite passes without one.
 
 ```bash
 docker compose up -d          # Kafka (KRaft) + Postgres + Jaeger
-./mvnw test                   # 51 tests — Testcontainers spins up its own Kafka/Postgres, no external services needed
+./mvnw test                   # 64 tests — Testcontainers spins up its own Kafka/Postgres, no external services needed
 ANTHROPIC_API_KEY=sk-... ./mvnw spring-boot:run
+
+# Or via AWS Bedrock instead of direct Anthropic — same app, same agents, different provider:
+# AWS_BEARER_TOKEN_BEDROCK=... HIVEMIND_LLM_PROVIDER=bedrock \
+#   HIVEMIND_LLM_MODEL=us.anthropic.claude-haiku-4-5-20251001-v1:0 ./mvnw spring-boot:run
 
 curl -X POST localhost:8080/api/v1/triage/tickets \
   -H "Content-Type: application/json" \
@@ -206,9 +218,9 @@ curl localhost:8080/api/v1/triage/tickets/<id>   # poll for classified → respo
 Open `http://localhost:16686` for the Jaeger UI and search for service `hivemind` to see the trace
 from that request — one trace id spanning the HTTP call, every Kafka hop, and the LLM call.
 
-Run the eval harness locally (also needs a real key to produce a meaningful score, not just a
-correctly-failing one — defaults to Haiku 4.5 to keep that cheap; the full 73-case run costs well
-under $1):
+Run the eval harness locally (also needs a funded key to produce a meaningful score, not just a
+correctly-failing one — defaults to Haiku 4.5 to keep that cheap; the full 73-case run, both sets,
+every tone-judge call included, cost $0.09 for real against Bedrock on 2026-08-15):
 
 ```bash
 ANTHROPIC_API_KEY=sk-... ./mvnw spring-boot:run -Dspring-boot.run.profiles=eval

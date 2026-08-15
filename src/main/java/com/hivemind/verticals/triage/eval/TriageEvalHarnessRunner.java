@@ -24,11 +24,12 @@ import java.util.Set;
  * Exits non-zero on a gating failure — the mechanism a real CI pipeline would call to block a merge,
  * even though there's no CI pipeline wired up to call it yet.
  *
- * <p>Gates on {@code category-accuracy}, {@code citation-recall}, {@code p95-latency-ms}, and, as of
- * session 14, {@code cost-per-ticket-usd} (via {@code CostTracker}, on real token counts from every
- * Claude call — see {@code TriageEvalReport.avgCostUsd()}). {@code tone-min-avg} still needs an
- * LLM-as-judge call no session yet has had a live Anthropic key to verify against, so it stays
- * configured but explicitly not gated on, rather than gated on a number that was never measured.
+ * <p>Gates on {@code category-accuracy}, {@code citation-recall}, {@code p95-latency-ms}, {@code
+ * cost-per-ticket-usd} (session 14, via {@code CostTracker} on real token counts — see {@code
+ * TriageEvalReport.avgCostUsd()}), and, as of session 21 (once a real, funded key existed to verify
+ * the judge call against), {@code tone-min-avg} — skipped only when {@code toneScoredCases} is zero
+ * (see {@code TriageEvalReport}), not gated on a default that would misrepresent "nothing to score"
+ * as "scored zero."
  *
  * <p>Also runs {@link TriageEvalRunner#runAdversarial} — the 20-case set {@code docs/EVALS.md}
  * describes — and writes its own report file, but never folds it into the pass/fail decision above:
@@ -54,6 +55,7 @@ public class TriageEvalHarnessRunner implements CommandLineRunner {
     private final double citationRecallThreshold;
     private final long p95LatencyMsThreshold;
     private final double costPerTicketUsdThreshold;
+    private final double toneMinAvgThreshold;
 
     public TriageEvalHarnessRunner(
             TriageEvalRunner evalRunner,
@@ -62,7 +64,8 @@ public class TriageEvalHarnessRunner implements CommandLineRunner {
             @Value("${hivemind.eval.thresholds.category-accuracy}") double categoryAccuracyThreshold,
             @Value("${hivemind.eval.thresholds.citation-recall}") double citationRecallThreshold,
             @Value("${hivemind.eval.thresholds.p95-latency-ms}") long p95LatencyMsThreshold,
-            @Value("${hivemind.eval.thresholds.cost-per-ticket-usd}") double costPerTicketUsdThreshold) {
+            @Value("${hivemind.eval.thresholds.cost-per-ticket-usd}") double costPerTicketUsdThreshold,
+            @Value("${hivemind.eval.thresholds.tone-min-avg}") double toneMinAvgThreshold) {
         this.evalRunner = evalRunner;
         this.objectMapper = objectMapper;
         this.applicationContext = applicationContext;
@@ -70,6 +73,7 @@ public class TriageEvalHarnessRunner implements CommandLineRunner {
         this.citationRecallThreshold = citationRecallThreshold;
         this.p95LatencyMsThreshold = p95LatencyMsThreshold;
         this.costPerTicketUsdThreshold = costPerTicketUsdThreshold;
+        this.toneMinAvgThreshold = toneMinAvgThreshold;
     }
 
     @Override
@@ -85,21 +89,28 @@ public class TriageEvalHarnessRunner implements CommandLineRunner {
 
         log.info(
                 "Eval run complete: {} cases ({} errored), category accuracy {}, routing accuracy {}, "
-                        + "citation recall {}, p50 {}ms, p95 {}ms, avg cost ${}/ticket",
+                        + "citation recall {}, p50 {}ms, p95 {}ms, avg cost ${}/ticket, avg tone {} ({} scored)",
                 report.totalCases(), report.erroredCases(), report.categoryAccuracy(), report.routingAccuracy(),
-                report.citationRecall(), report.p50LatencyMs(), report.p95LatencyMs(), report.avgCostUsd());
+                report.citationRecall(), report.p50LatencyMs(), report.p95LatencyMs(), report.avgCostUsd(),
+                report.avgTone(), report.toneScoredCases());
 
+        // A --case filter that only matches skip-response cases leaves toneScoredCases at 0 — that's
+        // "not applicable," not a failing tone score, the same treatment a null expectedRouting gets
+        // in TriageEvalScorer. Gating only kicks in once at least one case actually had a tone score.
+        boolean toneGatePassed = report.toneScoredCases() == 0 || report.avgTone() >= toneMinAvgThreshold;
         boolean passed = report.totalCases() > 0
                 && report.categoryAccuracy() >= categoryAccuracyThreshold
                 && report.citationRecall() >= citationRecallThreshold
                 && report.p95LatencyMs() <= p95LatencyMsThreshold
-                && report.avgCostUsd() <= costPerTicketUsdThreshold;
+                && report.avgCostUsd() <= costPerTicketUsdThreshold
+                && toneGatePassed;
 
         if (!passed) {
             log.error(
                     "Eval run FAILED gating thresholds (category-accuracy>={}, citation-recall>={}, "
-                            + "p95-latency-ms<={}, cost-per-ticket-usd<={})",
-                    categoryAccuracyThreshold, citationRecallThreshold, p95LatencyMsThreshold, costPerTicketUsdThreshold);
+                            + "p95-latency-ms<={}, cost-per-ticket-usd<={}, tone-min-avg>={})",
+                    categoryAccuracyThreshold, citationRecallThreshold, p95LatencyMsThreshold,
+                    costPerTicketUsdThreshold, toneMinAvgThreshold);
         } else {
             log.info("Eval run PASSED all gating thresholds");
         }

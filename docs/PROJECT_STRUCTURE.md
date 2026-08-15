@@ -31,7 +31,7 @@ Hivemind/
 │   └── devlog/                           ✅ one file per session, e.g. 2026-07-20.md
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml                        ✅ build + 51 tests on every push/PR to main — evals deliberately not gated here yet (cost/secrets, see EVALS.md)
+│       ├── ci.yml                        ✅ build + 64 tests on every push/PR to main — evals deliberately not gated here yet (cost/secrets, see EVALS.md)
 │       └── deploy.yml                    # K8s deploy — not added yet
 ├── evals/
 │   ├── triage/                           ✅ 53 hand-written *.json cases (target 50+ met, per docs/EVALS.md)
@@ -49,7 +49,7 @@ Hivemind/
     │       ├── application.yml           ✅
     │       └── db/migration/             ✅ V1__create_tickets_table.sql, V2__create_audit_events_table.sql
     └── test/
-        └── java/com/hivemind/            ✅ 17 test classes, 51 tests (plus a shared AbstractPostgresIntegrationTest base, not a test class itself)
+        └── java/com/hivemind/            ✅ 20 test classes, 64 tests (plus a shared AbstractPostgresIntegrationTest base, not a test class itself)
 ```
 
 ## `com.hivemind.platform` — the vertical-agnostic core
@@ -82,7 +82,8 @@ platform/
 ├── llm/
 │   ├── LlmClient.java                    ✅ LangChain4j wrapper, retry/backoff, doChat test seam — returns LlmResponse, not String
 │   ├── LlmResponse.java                  ✅ {text, tokenUsage} — what LlmClient.complete() actually returns
-│   └── CostTracker.java                  ✅ tokens → USD at a configurable (placeholder) per-million-token rate
+│   ├── CostTracker.java                  ✅ tokens → USD at a configurable per-million-token rate — real, verified Claude Haiku 4.5 pricing since session 19
+│   └── MarkdownCodeFenceStripper.java    ✅ new session 21 — strips a ```json ... ``` fence Claude sometimes wraps strict-JSON completions in; found via the first real (non-auth-failing) completion this project ever received
 ├── messaging/
 │   ├── EventBus.java                     ✅ Kafka producer wrapper (JSON via Jackson)
 │   ├── EventConsumer.java                ✅ generic consumer base — deserialize, catch-and-log onEvent; all four triage consumers extend it
@@ -132,11 +133,13 @@ verticals/
     │   └── TicketRouted.java             ✅ {ticketId, status, routingDecision, error} — final route result
     ├── eval/
     │   ├── TriageEvalCase.java            ✅ {id, ticket, expectedCategory, expectedRouting, mustCite} — loaded from evals/triage/*.json
-    │   ├── TriageEvalResult.java          ✅ one case's scored outcome
-    │   ├── TriageEvalReport.java          ✅ aggregate accuracy/recall/latency, written to eval-results/<timestamp>.json
+    │   ├── TriageEvalResult.java          ✅ one case's scored outcome, incl. toneScore/toneJudgeCostUsd (session 21)
+    │   ├── TriageEvalReport.java          ✅ aggregate accuracy/recall/latency/tone, written to eval-results/<timestamp>.json
     │   ├── TriageEvalScorer.java          ✅ pure comparison logic, unit-tested with no agents/mocks
-    │   ├── TriageEvalRunner.java          ✅ runs classify→plan→retrieve→(respond)→route in-process per case (no Kafka — evals score model quality, not event-bus plumbing); mirrors PlannerAgent's skip branch so eval cost/behavior matches production
-    │   └── TriageEvalHarnessRunner.java   ✅ CommandLineRunner, @Profile("eval"), gates on hivemind.eval.thresholds.*, real exit code, optional --case=<id> filter
+    │   ├── TriageEvalToneJudge.java       ✅ new session 21 — the one scoring dimension that needs a real Claude call, deliberately split out of TriageEvalScorer
+    │   ├── TriageEvalToneJudgment.java    ✅ new session 21 — {score, costUsd, error}, null score = not applicable, not failing
+    │   ├── TriageEvalRunner.java          ✅ runs classify→plan→retrieve→(respond)→route→(tone-judge) in-process per case (no Kafka — evals score model quality, not event-bus plumbing); mirrors PlannerAgent's skip branch so eval cost/behavior matches production
+    │   └── TriageEvalHarnessRunner.java   ✅ CommandLineRunner, @Profile("eval"), gates on all five hivemind.eval.thresholds.* (session 21), real exit code, optional --case=<id> filter
     ├── kb/
     │   ├── KbChunk.java                  ✅ {id, title, text}
     │   └── KnowledgeBase.java            ✅ 5 hardcoded chunks — stand-in for a Postgres-backed KB
@@ -170,7 +173,8 @@ When CodeScout (v2) and DeepDigger (v3) ship, they'll be siblings under
 infra/
 ├── config/
 │   ├── KafkaConfig.java                  ✅ NewTopic beans for triage's five topics
-│   ├── ClaudeConfig.java                 ✅ LangChain4j AnthropicChatModel bean
+│   ├── ClaudeConfig.java                 ✅ builds the one ChatModel bean — AnthropicChatModel (default) or BedrockChatModel (session 21), branching on hivemind.llm.provider
+│   ├── HivemindLlmProperties.java        ✅ new session 21 — typed @ConfigurationProperties record backing ClaudeConfig, the first use of this pattern in the codebase
 │   ├── TracingConfig.java                ✅ LoggingSpanExporter bean, kept alongside the OTLP exporter Spring Boot autoconfigures from `management.otlp.tracing.endpoint`; Tracer/Propagator are autoconfigured too
 │   ├── PostgresConfig.java               # not built — spring-boot-starter-jdbc autoconfigures the DataSource/JdbcTemplate, nothing custom needed yet
 │   └── RedisConfig.java                  # not built
@@ -216,10 +220,10 @@ cost control), with `hivemind.llm.pricing.*` set to real verified Haiku rates to
 both together via `HIVEMIND_LLM_MODEL` for a Sonnet-quality demo run. Thresholds in `application.yml`
 (`hivemind.eval.thresholds.*`) are read and gated on by
 `TriageEvalHarnessRunner` — `category-accuracy`, `citation-recall`,
-`p95-latency-ms`, and (as of session 14) `cost-per-ticket-usd` — only for the
-primary set; only `tone-min-avg` stays configured but ungated for that set
-(see `docs/EVALS.md` for why), and the adversarial set's report is written
-and logged but structurally excluded from the pass/fail decision entirely.
+`p95-latency-ms`, `cost-per-ticket-usd` (session 14), and, as of session 21, `tone-min-avg` — all five,
+only for the primary set; the adversarial set's report is written and logged but structurally excluded
+from the pass/fail decision entirely. First real run against a funded key (2026-08-15, via AWS
+Bedrock): 53/53 primary cases passed every gate — see `docs/EVALS.md` for the full numbers.
 
 ## Frontend — separate sibling
 
@@ -227,29 +231,34 @@ The Next.js dashboard lives in `frontend/` at the repo root, once built.
 It is a sibling of the Spring Boot app, not a Spring resource. It builds
 and deploys independently.
 
-## Current state (as of 2026-08-12, session 20)
+## Current state (as of 2026-08-15, session 21)
 
-Real code exists in `platform/agent`, `platform/llm` (including `LlmResponse`/`CostTracker`, and,
-since session 15, the `llm.complete` tracing span inside `LlmClient` itself), `platform/messaging`
-(including the generic `EventConsumer` base and `AuditLog`), `platform/tool` (including, since
-session 16, the `tool.invoke` tracing span inside `ToolInvoker`), `platform/retry`, all of
-`verticals/triage` except four planned tool files, `infra/{config,persistence}` (including
-`TracingConfig`), and `.github/workflows/ci.yml`. Local Kafka, Postgres, and (since session 17)
-Jaeger all run via `docker-compose.yml` — Kafka carrying four chained consumers
+Real code exists in `platform/agent`, `platform/llm` (including `LlmResponse`/`CostTracker`/
+`MarkdownCodeFenceStripper`, and, since session 15, the `llm.complete` tracing span inside `LlmClient`
+itself), `platform/messaging` (including the generic `EventConsumer` base and `AuditLog`),
+`platform/tool` (including, since session 16, the `tool.invoke` tracing span inside `ToolInvoker`),
+`platform/retry`, all of `verticals/triage` except four planned tool files, `infra/{config,persistence}`
+(including `TracingConfig`), and `.github/workflows/ci.yml`. Local Kafka, Postgres, and (since session
+17) Jaeger all run via `docker-compose.yml` — Kafka carrying four chained consumers
 (classify → retrieve → respond → route) with a single trace id propagated via Kafka headers across
 every hop and every LLM/tool call inside those hops, exported both as log lines and over OTLP to the
 real Jaeger container; Postgres backing both `TicketRepository` (current state) and `AuditLog`
-(immutable event history). As of session 20, `PlannerAgent` makes the pipeline's first real branching
+(immutable event history). Since session 20, `PlannerAgent` makes the pipeline's first real branching
 decision — an `ABUSE` classification now skips `ResponderAgent` (and its Claude call) entirely, with
 retrieval still running so the citation trail survives; every other category still takes all four
 hops unchanged. `evals/triage/` has 53 real cases (the 50+ target, met session 13), run via the
-`eval` Spring profile and gated on four of five configured thresholds; `evals/triage-adversarial/`
-has a separate 20 (session 18), run through the identical pipeline but never gated — tracked, not
-blocking. As of session 19 the harness defaults to Claude Haiku 4.5 with real verified pricing
-(individual-budget cost control, not an org-funded project) and accepts a `--case=<id>` filter to
-restrict a run to specific cases instead of the full 73. GitHub Actions CI runs the 51-test suite on
-every push/PR — not yet the eval harness itself. Nothing under `k8s/` or `frontend/` exists yet —
-those are still purely descriptions, filled in if/when their sessions come up.
+`eval` Spring profile and gated on all five configured thresholds (session 21 added tone, via the
+new `TriageEvalToneJudge`); `evals/triage-adversarial/` has a separate 20 (session 18), run through
+the identical pipeline but never gated — tracked, not blocking. As of session 19 the harness defaults
+to Claude Haiku 4.5 with real verified pricing and accepts a `--case=<id>` filter to restrict a run
+to specific cases instead of the full 73. Session 21 also added AWS Bedrock as a second `ChatModel`
+provider (`ClaudeConfig`/`HivemindLlmProperties`, `HIVEMIND_LLM_PROVIDER=bedrock`) — the mechanism
+that finally made a real, funded key available, which produced this project's first-ever real
+(non-auth-failing) Claude completions and, with them, a real bug (a markdown-fenced JSON response,
+fixed via `MarkdownCodeFenceStripper`) and a real, fully-passing eval run: 53/53 primary cases, all
+five gates, $0.09 total spend across both sets. GitHub Actions CI runs the 64-test suite on every
+push/PR — not yet the eval harness itself. Nothing under `k8s/` or `frontend/` exists yet — those are
+still purely descriptions, filled in if/when their sessions come up.
 
 For the full narrative — what each of these pieces actually does, the
 request lifecycle as it genuinely runs today, and the reasoning behind

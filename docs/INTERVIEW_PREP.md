@@ -25,34 +25,38 @@ a single-process graph library.
 
 **Q: What's actually built vs. what's still just documented/planned?**
 Be precise here — this is a portfolio project and overclaiming is the fastest way to lose
-credibility in an interview. As of 2026-08-05: five agents (`ClassifierAgent`, `PlannerAgent`,
+credibility in an interview. As of 2026-08-15: five agents (`ClassifierAgent`, `PlannerAgent`,
 `RetrieverAgent`, `ResponderAgent`, `RoutingAgent`) genuinely chained through Kafka — classify →
 (plan) → retrieve → respond → route — with `GET /tickets/{id}` reaching a final routing decision,
 both ticket state and the full event history persisted in real Postgres (`TicketRepository`,
 `AuditLog`), and an eval harness (`verticals/triage/eval/`) that runs 53 hand-written cases (the 50+
-target, hit session 13) and gates on category accuracy / citation recall / p95 latency / cost-per-ticket
-(session 14, real `TokenUsage`-derived cost via `CostTracker`) with a real process exit code, plus a
-separate 20-case adversarial set (session 18) run through the identical pipeline but never gated.
-GitHub Actions CI (session 11) runs the 51-test suite on every push/PR. Distributed tracing (session 12)
-follows one trace id across the HTTP request, every Kafka hop, every LLM call (session 15), and every
-tool call (session 16) — every span type `ARCHITECTURE.md` names is real now — exported both as log
-lines and, as of session 17, to a real Jaeger backend over OTLP (queryable through Jaeger's own UI/API,
-not just grepped log lines). The full `ARCHITECTURE.md` pipeline is real except the `Stream` step (SSE
-to a dashboard that doesn't exist) and full ingest-time planner dispatch (see below). Session 19 added
-a `--case=<id>` filter and switched the eval harness's default model to Haiku 4.5, with real verified
-pricing replacing the old placeholder rates — both a cost-control move for this being an
-individual-not-org budget, and, as a side effect, finally resolving the "pricing is a placeholder"
-gap noted in every session before it. Session 20 shipped `PlannerAgent` — the pipeline's first real
-branching decision: an `ABUSE` classification skips `ResponderAgent`'s Claude call entirely (retrieval
-still runs, so the citation trail survives), verified over real Kafka including a `verify(...,
-never())` assertion that the Claude call genuinely didn't happen. It's a first real slice, not the
-full vision — it doesn't decide retrieval, doesn't reorder stages, and doesn't run at ingest, so "four
-hardcoded Kafka hops" is now accurate for every category except `ABUSE`, not for all of them. Still
+target, hit session 13) and gates on **all five** thresholds — category accuracy, routing correctness,
+citation recall, tone (LLM-as-judge, session 21), and cost-per-ticket (session 14) — with a real
+process exit code, plus a separate 20-case adversarial set (session 18) run through the identical
+pipeline but never gated. GitHub Actions CI (session 11) runs the 64-test suite on every push/PR.
+Distributed tracing (session 12) follows one trace id across the HTTP request, every Kafka hop, every
+LLM call (session 15), and every tool call (session 16) — every span type `ARCHITECTURE.md` names is
+real now — exported both as log lines and, as of session 17, to a real Jaeger backend over OTLP
+(queryable through Jaeger's own UI/API, not just grepped log lines). The full `ARCHITECTURE.md`
+pipeline is real except the `Stream` step (SSE to a dashboard that doesn't exist) and full ingest-time
+planner dispatch (see below). Session 19 added a `--case=<id>` filter and switched the eval harness's
+default model to Haiku 4.5, with real verified pricing replacing the old placeholder rates. Session 20
+shipped `PlannerAgent` — the pipeline's first real branching decision: an `ABUSE` classification skips
+`ResponderAgent`'s Claude call entirely (retrieval still runs, so the citation trail survives),
+verified over real Kafka including a `verify(..., never())` assertion that the Claude call genuinely
+didn't happen. It's a first real slice, not the full vision — it doesn't decide retrieval, doesn't
+reorder stages, and doesn't run at ingest, so "four hardcoded Kafka hops" is accurate for every
+category except `ABUSE`, not for all of them. Session 21 (2026-08-15) is the session every prior one
+was blocked waiting on: added AWS Bedrock as a second `ChatModel` provider (`HIVEMIND_LLM_PROVIDER=
+bedrock`) specifically because a funded AWS account existed when a funded Anthropic one didn't, which
+finally produced this project's first-ever real (non-auth-failing) Claude completions — surfacing and
+fixing a real bug (Claude wrapping strict-JSON output in a markdown fence, see the LLM section below)
+and producing this project's first real, fully-passing eval run: 53/53 primary cases, all five gates,
+100% category/routing/citation accuracy, 4.32/5 avg tone, $0.09 total spend across both sets. Still
 not built: the *full* dynamic planner described just above, pgvector-backed KB persistence
-(`KnowledgeBase` is still 5 hardcoded chunks), the eval harness's tone scoring (the one threshold
-still ungated — needs a live LLM-as-judge call, though a key is expected soon), CI gating on the eval
-harness itself (cost/secrets tradeoff, deliberate), `llm.vertical`/`tool.vertical` span tags, frontend.
-Check `docs/devlog/` for the current honest state before claiming anything more specific.
+(`KnowledgeBase` is still 5 hardcoded chunks), CI gating on the eval harness itself (cost/secrets
+tradeoff, deliberate), `llm.vertical`/`tool.vertical` span tags, frontend. Check `docs/devlog/` for
+the current honest state before claiming anything more specific.
 
 ## LLM / agent orchestration
 
@@ -288,6 +292,44 @@ than leaving a stale, now-wrong placeholder in place. Worth remembering the coup
 `hivemind.llm.model` and `hivemind.llm.pricing.*` aren't linked in code — switching the model back to
 Sonnet for a demo run without also updating the pricing rates would silently produce a wrong
 `llm.cost_usd`/`avgCostUsd` figure for whatever model is actually running.
+
+**Q: Why does Hivemind support both direct Anthropic and AWS Bedrock as LLM providers?**
+A practical, individual-budget reason, not an architectural one: this is a solo project, and session
+21 was the first session with a *funded* key at all — the direct Anthropic account stayed at a zero
+balance while a separate AWS account had real credits, so Bedrock (which serves the same Claude
+models through AWS) was the actual path to a first real completion, not a design goal in itself. It's
+a small change specifically because `LlmClient` already depends only on LangChain4j's generic
+`ChatModel` interface, never `AnthropicChatModel` directly — the "one seam per external dependency"
+discipline this codebase already applied to `EventBus`/`KafkaTemplate` and `TicketRepository`/
+`JdbcTemplate`. `ClaudeConfig.claudeChatModel(...)` just branches on `hivemind.llm.provider` and
+builds `AnthropicChatModel` or `BedrockChatModel`, both implementing `ChatModel` — `LlmClient`'s
+retry loop, cost tracking, and tracing span didn't need a single line changed. Verified before
+writing any code, not assumed: read the actual 1.17.2 `BedrockExceptionMapper` source and confirmed
+it routes 429/5xx/408 through the exact same `RetriableException` hierarchy Anthropic's client uses,
+so the retry policy transfers unchanged. One deliberate difference: `BedrockChatModel` does its own
+internal retry by default (2 attempts) before mapping a final failure — set to `maxRetries(0)` in
+`ClaudeConfig` so `LlmClient` stays the single place a retry policy is configured, rather than two
+independent retry loops silently multiplying attempts.
+
+**Q: What broke the first time this project got a real (non-auth-failing) Claude completion, and what
+does that say about the strict-JSON-via-prompt approach used everywhere?**
+A real, honest finding, not a hypothetical one: `ClassifierAgent`'s very first genuine completion —
+a plain billing ticket — failed to parse. Claude wrapped the requested JSON in a `` ```json `` markdown
+fence despite the system prompt saying "Respond with ONLY a JSON object, no prose." Every strict-JSON
+prompt in this codebase (`ClassifierAgent`, `ResponderAgent`, and the new `TriageEvalToneJudge`) had
+been written and tested against mocked/scripted responses since session 2 — no session before this one
+had ever had a real completion to test that specific assumption against, so it went unnoticed for
+months of otherwise-real development. Fixed centrally, once, in `LlmClient.doChat()` via a new
+`MarkdownCodeFenceStripper` — deliberately narrow: it only strips a fence that wraps the *entire*
+response, so it doesn't risk silently mangling genuinely malformed output into something that looks
+parseable but isn't. That narrowness immediately mattered: the adversarial eval set's
+`injection-004` case hit a *different* shape of the same underlying issue — Claude correctly resisted
+a prompt-injection attempt but appended defensive explanatory prose *after* the closing fence — which
+the stripper correctly declines to touch, so it still fails to parse. Left as a tracked, honest
+adversarial-set finding rather than chased with more special-casing: an LLM can decorate a
+strict-JSON response in arbitrarily many ways, and structured output/tool-calling (already documented
+elsewhere in this file as "the upgrade once there's a concrete reason") is the actual fix for that
+class of problem, not another regex.
 
 ## Kafka / eventing
 
@@ -737,17 +779,45 @@ isn't trustworthy even if it might pass correctly; this is the same reasoning be
 
 **Q: Cost-per-ticket gating (session 14) shipped with a dummy Anthropic key too — doesn't that mean
 it's never actually been tested with a real cost figure?**
-Correct, and worth saying plainly rather than glossing over: `avgCostUsd` came back `0.0` in every
-verification run so far, because `AgentResult.failure(...)` always carries `0.0` cost and every case
-fails at the classify step before any tokens get billed. What *was* verified for real: the app boots
-cleanly with the new `CostTracker` bean and `hivemind.llm.pricing.*` config resolved, the harness
-runs the full 53-case set without error, `avgCostUsd` appears correctly in both the log line and the
-written JSON report, and the gating comparison (`avgCostUsd <= costPerTicketUsdThreshold`) executes
-without throwing. Separately, `CostTrackerTest` and the updated `ClassifierAgentTest`/`ResponderAgentTest`
-verify the actual dollars-from-tokens *math* is correct, using real `TokenUsage` values and asserting
-exact expected costs — so the arithmetic is proven even though a real end-to-end non-zero number
-isn't yet. Two different kinds of confidence, both honestly reported as what they are, neither
-substituting for the other.
+That was true through session 20 — worth having said plainly rather than glossed over at the time —
+and no longer is. Through session 20, `avgCostUsd` came back `0.0` in every verification run, because
+`AgentResult.failure(...)` always carries `0.0` cost and every case failed at the classify step before
+any tokens got billed; what *was* verified for real up to that point was the arithmetic
+(`CostTrackerTest`, `ClassifierAgentTest`/`ResponderAgentTest` with real `TokenUsage` values and exact
+expected costs) and the mechanism (config resolves, the harness runs end to end, the gating comparison
+executes without throwing) — two different kinds of confidence, honestly reported as what they were,
+neither substituting for a real number. Session 21 (2026-08-15) closed that gap: a real, funded key
+(via AWS Bedrock) produced a real 53-case run with `avgCostUsd = $0.00094`, comfortably under the
+$0.05 threshold, and the full 73-case run (both sets, every tone-judge call included) cost $0.09 total
+— see "What did the first real eval run actually show?" below for the complete numbers.
+
+**Q: What did the first real eval run — against a funded key, for the first time in this project's
+history — actually show?**
+53/53 primary cases passed all five gates: category accuracy 1.0, routing accuracy 1.0, citation
+recall 1.0, avg tone 4.32/5 (47 of 53 cases scored — the other 6 are `ABUSE` cases correctly excluded
+via `PlanDecision.SKIP_RESPONSE`, not failed), p50/p95 latency 4.0s/5.2s, avg cost $0.00094/ticket.
+Every number in this project's docs before 2026-08-15 that described eval behavior was either a
+mechanism proof (the harness runs, gates, and exits correctly) or a "fails correctly" proof (a dummy
+key produces `categoryAccuracy = 0.0` and exit code 1) — this is the first time any of it was actually
+scored for real. The adversarial set (20 cases, tracked not gated) scored 90% category accuracy, 80%
+citation recall, and caught two genuinely new things specifically because it was a real run: see the
+next Q&A.
+
+**Q: The adversarial set was designed to "surface real weaknesses... tracked over time" — what did it
+actually catch, the first time it ran for real?**
+Two new findings, plus confirmation of one long-predicted one. First (new): `injection-004` — a
+prompt-injection case where the ticket claims to be from a "verified administrator" instructing the
+classifier to reclassify real abuse as `OTHER` — the model's *judgment* correctly resisted the
+injection (classified `ABUSE`, 0.95 confidence) but broke the strict-JSON output contract by appending
+defensive explanatory prose after the fence, so the case still errored on parsing. A good adversarial
+catch in the sense that matters: the injection didn't fool the model, but it did perturb its output
+format, which is exactly the kind of thing this set exists to surface. Second (new): `contradiction-002`
+(a self-contradictory ticket praising dark mode as already working while also requesting it) landed on
+`OTHER` instead of the expected `FEATURE_REQUEST` — a plausible, real miss on genuinely ambiguous
+input. Third (confirmed, not new): all four `nonenglish-*` cases missed citation recall, exactly the
+predictable failure `docs/EVALS.md` described before this project ever had a real run to check it
+against — `SearchKbTool`'s naive English keyword-overlap retrieval, now confirmed rather than only
+predicted.
 
 ## CI / delivery
 
@@ -771,12 +841,15 @@ response *quality* is actually what's being judged. Second, `TriageEvalHarnessRu
 `--case=<id>[,<id>...]` program argument (`-Dspring-boot.run.arguments=--case=billing-001`) that
 restricts a run to just the listed case ids across both the primary and adversarial directories — the
 flag `docs/EVALS.md` had described since before the adversarial set even existed, finally built.
-Third, and simplest: the full 73-case run was never actually expensive to begin with — at Haiku
-pricing it's well under $1 total, so the filter's real value is iteration speed (a 1-2 case sanity
-check finishes in seconds) more than it is meaningful cost avoidance at this project's scale. Verified
-end to end with a dummy key: `--case=billing-001,abuse-001` produced a report with exactly 2 cases (0
-in the adversarial report, since neither id exists there), and the real `llm.complete` tracing span
-confirmed `llm.model="claude-haiku-4-5-20251001"` actually reached the wire, not just the config file.
+Third, and simplest: the full 73-case run was never actually expensive to begin with — estimated well
+under $1 at Haiku pricing before any session had a funded key to check, confirmed for real session 21
+($0.09 total, both sets, including every tone-judge call) — so the filter's real value is iteration
+speed (a 1-2 case sanity check finishes in seconds) more than it is meaningful cost avoidance at this
+project's scale. Verified end to end with a dummy key: `--case=billing-001,abuse-001` produced a
+report with exactly 2 cases (0 in the adversarial report, since neither id exists there), and the real
+`llm.complete` tracing span confirmed `llm.model="claude-haiku-4-5-20251001"` actually reached the
+wire, not just the config file. (Re-verified against a real, funded key the same way in session 21,
+this time watching the report come back with real, non-zero scores instead of a correctly-empty one.)
 
 **Q: Why is `./mvnw test` alone sufficient as the whole CI command — no separate integration-test
 phase?**
